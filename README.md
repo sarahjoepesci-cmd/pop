@@ -1,1 +1,1 @@
-Version corrigée : dataset consolidé OFGL, conversion k€→€, debug OFGL intégrée.
+Simulateur simple : population -> €/hab -> budget indicatif, impondérables (planchers), enveloppe libre et répartition par mesures. 100% statique.
