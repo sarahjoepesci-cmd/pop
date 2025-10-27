@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Simulateur communal POP — Correctif rendu</title>
+  <title>Simulateur communal POP — Consolidé OFGL + k€→€</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -16,6 +16,7 @@
     .dropdown-item { padding: 8px 12px; cursor: pointer; }
     .dropdown-item:hover { background: #f9fafb; }
     .muted { color: #6b7280; }
+    details summary { cursor: pointer; }
   </style>
 </head>
 <body class="bg-gray-50">
@@ -29,10 +30,11 @@
   <script type="text/babel">
     const { useMemo, useState, useEffect, useRef } = React;
 
+    // ---------- Helpers API ----------
     async function fetchOfglBudgets(insee) {
       try {
         const qs = new URLSearchParams({
-          dataset: "ofgl-base-communes",
+          dataset: "ofgl-base-communes-consolidee", // consolidé (principal + annexes)
           "refine.codgeo": insee,
           rows: "1",
           sort: "-exer"
@@ -43,14 +45,20 @@
         const data = await r.json();
         const rec = data.records?.[0]?.fields;
         if (!rec) return null;
+        // Les montants OFGL sont exprimés en k€ -> conversion en €
+        const K = 1000;
         return {
-          funcRec: Number(rec.f_rec) || 0,
-          funcDep: Number(rec.f_dep) || 0,
-          invRec:  Number(rec.i_rec) || 0,
-          invDep:  Number(rec.i_dep) || 0,
+          raw: rec,
+          funcRec: (Number(rec.f_rec) || 0) * K,
+          funcDep: (Number(rec.f_dep) || 0) * K,
+          invRec:  (Number(rec.i_rec) || 0) * K,
+          invDep:  (Number(rec.i_dep) || 0) * K,
           year: rec.exer
         };
-      } catch (e) { console.warn("Erreur OFGL", e); return null; }
+      } catch (e) {
+        console.warn("Erreur OFGL", e);
+        return null;
+      }
     }
 
     async function fetchDGF(insee) {
@@ -71,9 +79,13 @@
         const year  = rec.annee ?? rec.exer ?? null;
         if (!value) return null;
         return { value, year };
-      } catch (e) { console.warn("Erreur DGF", e); return null; }
+      } catch (e) {
+        console.warn("Erreur DGF", e);
+        return null;
+      }
     }
 
+    // ---------- Règles sièges ----------
     const seatRules = [
       { min: 0, max: 99, seats: 7 },
       { min: 100, max: 499, seats: 11 },
@@ -106,6 +118,7 @@
       return pop >= 1000 ? "Scrutin de liste paritaire (≥ 1000 hab)" : "Scrutin majoritaire plurinominal (panachage)";
     }
 
+    // ---------- Mesures ----------
     const MEASURES = [
       { id: "proprete_tri", label: "Propreté — Bacs + tri collectif", unitLabel: "bacs", defaultUnits: 60, defaultUnitCost: 320, capexShare: 0.5, type: "expense" },
       { id: "voirie_velo", label: "Mobilité — Marquage pistes cyclables", unitLabel: "km", defaultUnits: 5, defaultUnitCost: 40000, capexShare: 0.8, type: "expense" },
@@ -117,6 +130,7 @@
       { id: "taxe_residences_secondaires", label: "Recette — Surtaxe résidences secondaires", unitLabel: "k€ estimés/an", defaultUnits: 50, defaultUnitCost: 1000, capexShare: 0.0, type: "revenue" },
     ];
 
+    // ---------- Utils ----------
     function euro(n) { return (n ?? 0).toLocaleString("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 0 }); }
     function useDebouncedValue(value, delay=300) { const [v, setV] = React.useState(value); React.useEffect(()=>{const t=setTimeout(()=>setV(value),delay);return()=>clearTimeout(t);},[value,delay]); return v; }
 
@@ -136,6 +150,7 @@
       </div>);
     }
 
+    // ---------- App ----------
     function App() {
       const [commune, setCommune] = useState({ nom: "", insee: "", population: null });
       const [population, setPopulation] = useState(null);
@@ -146,6 +161,7 @@
       const [dgf, setDgf] = useState(300000);
       const [autoYear, setAutoYear] = useState(null);
       const [autoDgfYear, setAutoDgfYear] = useState(null);
+      const [ofglRaw, setOfglRaw] = useState(null);
       const [basket, setBasket] = useState(MEASURES.map(m=>({id:m.id,units:m.defaultUnits,unitCost:m.defaultUnitCost})));
 
       const popRef = useMemo(()=> (population ?? commune.population ?? null), [population, commune]);
@@ -168,6 +184,7 @@
       const dispoApres = Math.max(0, (baseBudgetFuncRec + totals.recettes) - (baseBudgetFuncDep + totals.opex))
                        + Math.max(0, (baseBudgetInvRec + dgf) - (baseBudgetInvDep + totals.capex));
 
+      function euro(n) { return (n ?? 0).toLocaleString("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 0 }); }
       function downloadPDF(){ const el=document.getElementById("pdf-area"); const opt={margin:8,filename:`Dossier_POP_${(commune.nom||"commune").replace(/\s+/g,"_")}.pdf`,image:{type:"jpeg",quality:0.98},html2canvas:{scale:2,useCORS:true},jsPDF:{unit:"mm",format:"a4",orientation:"portrait"}}; html2pdf().set(opt).from(el).save(); }
       function downloadJson(){ const payload={ commune:{ nom:commune.nom||"", insee:commune.insee||"", population_reference:popRef, mode_scrutin:scrutin, sieges:seats, dgf_estimee:dgf }, budget_base:{ fonctionnement:{ depenses:baseBudgetFuncDep, recettes:baseBudgetFuncRec }, investissement:{ depenses:baseBudgetInvDep, recettes:baseBudgetInvRec }, epargne_brute:epargneBruteAvant, budget_disponible_avant:dispoAvant, budget_disponible_apres:dispoApres }, programme:basket, resultats:{ capex:totals.capex, opex:totals.opex, recettes_nouvelles:totals.recettes, epargne_brute_apres:epargneBruteApres } }; const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"}); const url=URL.createObjectURL(blob); const a=document.createElement("a"); a.href=url; a.download=`simulation_POP_${(commune.nom||"commune").replace(/\s+/g,"_")}.json`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); }
 
@@ -182,7 +199,8 @@
           setBaseBudgetInvRec(b.invRec);
           setBaseBudgetInvDep(b.invDep);
           setAutoYear(b.year);
-        } else { setAutoYear(null); }
+          setOfglRaw(b.raw || null);
+        } else { setAutoYear(null); setOfglRaw(null); }
 
         const d = await fetchDGF(c.code);
         if (d && typeof d.value === "number") {
@@ -234,15 +252,19 @@
               </div>
             </div>
             <div className="mt-2 text-xs muted">
-              {autoYear ? <>Budgets préremplis (OFGL {autoYear})</> : <>Saisissez ou sélectionnez une commune pour préremplir</>}
+              {autoYear ? <>Budgets préremplis (OFGL consolidé {autoYear})</> : <>Saisissez ou sélectionnez une commune pour préremplir</>}
               {autoDgfYear ? <> • DGF {autoDgfYear}</> : null}
             </div>
+            {ofglRaw && <details className="mt-2">
+              <summary className="text-xs text-gray-600 underline">Debug OFGL (champ brut)</summary>
+              <pre className="text-[11px] bg-gray-50 p-3 rounded-lg overflow-auto">{JSON.stringify(ofglRaw, null, 2)}</pre>
+            </details>}
           </section>
 
           <section className="card bg-white rounded-2xl p-6">
             <div className="flex items-center justify-between mb-2">
               <h2 className="text-xl font-semibold">2) Budget de base</h2>
-              <div className="text-xs muted">{autoYear ? <>OFGL {autoYear}</> : <>—</>}{autoDgfYear ? <> • DGF {autoDgfYear}</> : null}</div>
+              <div className="text-xs muted">{autoYear ? <>OFGL consolidé {autoYear}</> : <>—</>}{autoDgfYear ? <> • DGF {autoDgfYear}</> : null}</div>
             </div>
             <div className="grid md:grid-cols-2 gap-4">
               <div className="bg-gray-50 rounded-xl p-3">
@@ -299,7 +321,7 @@
             </ul>
           </section>
 
-          <section className="text-center text-xs muted">© POP — Prototype statique. Valeurs indicatives. Sources: OFGL, opendata.finances.gouv.fr</section>
+          <section className="text-center text-xs muted">© POP — Prototype statique. Valeurs indicatives. Sources: OFGL (consolidé, k€→€), opendata.finances.gouv.fr</section>
         </div>
       </div>);
     }

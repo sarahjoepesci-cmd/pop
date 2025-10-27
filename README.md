@@ -1,1 +1,1 @@
-Correctif d'un bug JS (meta -> m) qui empêchait le rendu. Autocomplete, sièges (barème complet), auto-budgets OFGL/DGF, budget disponible inclus.
+Version corrigée : dataset consolidé OFGL, conversion k€→€, debug OFGL intégrée.
