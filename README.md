@@ -1,1 +1,1 @@
-Remplacez votre index.html par celui-ci (Vercel 'Other' ou Netlify). Budgets OFGL et DGF préremplis si disponibles via API publiques.
+Remplacez votre index.html par celui-ci (Vercel 'Other' ou Netlify). Ajoute 'Budget disponible' AVANT/APRÈS, auto-budget OFGL et DGF (si dispo).
