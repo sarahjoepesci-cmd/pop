@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Simulateur POP — Budget simple (no‑build)</title>
+  <title>Simulateur POP — Budget simple + Import CSV</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -24,9 +24,11 @@
 <body class="bg-gray-50">
   <main id="root" class="p-6 md:p-10 max-w-6xl mx-auto"></main>
 
-  <!-- Preact + HTM standalone (no build, no JSX) -->
+  <!-- Preact + HTM standalone (no build) -->
   <script type="module">
     import { html, render, useState, useMemo, useEffect, useRef } from 'https://unpkg.com/htm/preact/standalone.module.js';
+    // Papa Parse (CSV)
+    const Papa = await import('https://cdn.jsdelivr.net/npm/papaparse@5.4.1/+esm');
 
     const euro = (n) => (n ?? 0).toLocaleString('fr-FR', { style:'currency', currency:'EUR', maximumFractionDigits:0 });
     const clamp = (n,a,b) => Math.max(a, Math.min(b,n));
@@ -86,6 +88,22 @@
     ];
     const seatsFromPopulation = (pop) => { if(pop==null||isNaN(pop)) return null; const r=seatRules.find(r=>pop>=r.min && pop<=r.max); return r? r.seats:null; };
 
+    // Compute helpers for imported measures
+    const needUnits = new Set(['per_unit','per_km','per_m2','per_point_lumineux']);
+    function computeAmount(m, pop){
+      const base = +m.base_value || 0;
+      const units = +m.units || 0;
+      switch(m.scaling){
+        case 'per_inhabitant': return base * (pop || 0);
+        case 'per_unit':
+        case 'per_km':
+        case 'per_m2':
+        case 'per_point_lumineux': return base * units;
+        case 'fixed_estimate': return base;
+        default: return +m.montant || 0;
+      }
+    }
+
     function App(){
       const [commune, setCommune] = useState({ nom:'', insee:'', population:null });
       const [population, setPopulation] = useState(null);
@@ -99,25 +117,79 @@
         { id:'energie', label:'Énergie & bâtiments communaux', pct:6 },
         { id:'dette', label:'Annuité de dette (intérêts + capital)', pct:6 },
       ]);
-      const [items, setItems] = useState([
-        { id:1, label:'Ex. rénovation équipements sportifs', montant:150000 },
-        { id:2, label:'Ex. plan ombrières d\'écoles', montant:80000 },
-      ]);
+
+      // Imported measures
+      const [measures, setMeasures] = useState([]); // each: {id,label,category,scaling,unit,base_value,capex_share,notes,units, montant}
+      const [showImportHelp, setShowImportHelp] = useState(false);
+      const fileRef = useRef(null);
 
       const popRef = useMemo(()=> population ?? commune.population ?? 0, [population, commune]);
       const seats = useMemo(()=> seatsFromPopulation(popRef), [popRef]);
+
+      // Budget indicative & envelopes
       const totalPctFloors = useMemo(()=> floors.reduce((s,f)=>s+(+f.pct||0),0), [floors]);
       const totalIndicatif = useMemo(()=> (popRef||0) * (+eurosParHab||0), [popRef, eurosParHab]);
       const montantFloors = useMemo(()=> floors.map(f=> ({...f, amount: totalIndicatif * clamp((+f.pct||0)/100, 0, 1)})), [floors, totalIndicatif]);
       const sommeFloors = useMemo(()=> montantFloors.reduce((s,f)=> s + f.amount, 0), [montantFloors]);
       const enveloppeLibre = useMemo(()=> Math.max(0, totalIndicatif - sommeFloors), [totalIndicatif, sommeFloors]);
-      const totalProgramme = useMemo(()=> items.reduce((s,i)=> s + (+i.montant||0), 0), [items]);
+
+      // Programme (legacy free items) — keep for flexibility
+      const [items, setItems] = useState([
+        { id:1, label:'Ex. rénovation équipements sportifs', montant:150000 },
+        { id:2, label:'Ex. plan ombrières d\'écoles', montant:80000 },
+      ]);
+
+      // Recompute imported measures amounts when population or units change
+      const computedMeasures = useMemo(()=> measures.map(m => ({...m, montant: computeAmount(m, popRef)})), [measures, popRef]);
+      const totalProgrammeImported = useMemo(()=> computedMeasures.reduce((s,m)=> s + (+m.montant||0), 0), [computedMeasures]);
+      const totalProgrammeManual = useMemo(()=> items.reduce((s,i)=> s + (+i.montant||0), 0), [items]);
+      const totalProgramme = useMemo(()=> totalProgrammeImported + totalProgrammeManual, [totalProgrammeImported, totalProgrammeManual]);
       const reliquat = useMemo(()=> Math.max(0, enveloppeLibre - totalProgramme), [enveloppeLibre, totalProgramme]);
 
       const updateFloor = (id, pct) => setFloors(prev => prev.map(f=> f.id===id ? {...f, pct:+pct} : f));
       const addItem = () => { const nid = (items.length? items[items.length-1].id:0) + 1; setItems(prev => [...prev, { id:nid, label:'Nouvelle mesure', montant:0 }]); };
       const updateItem = (id, key, value) => setItems(prev => prev.map(i => i.id===id ? {...i, [key]: (key==='montant'? +value : value)} : i));
       const removeItem = (id) => setItems(prev => prev.filter(i => i.id!==id));
+
+      // CSV import
+      function onClickImport(){ fileRef.current?.click(); }
+      function onFileSelected(e){
+        const f = e.target.files?.[0];
+        if(!f) return;
+        Papa.parse(f, {
+          header: true,
+          skipEmptyLines: true,
+          complete: (res)=>{
+            const rows = res.data || [];
+            const normalized = rows.map((r, idx) => {
+              const step = r.step_unit ? +r.step_unit : 1;
+              const sc = (r.scaling || '').trim();
+              const baseVal = +(r.base_value||0);
+              return {
+                id: (r.id || `m_${idx}`).toString().trim(),
+                label: (r.label || `Mesure ${idx+1}`).toString().trim(),
+                category: (r.category || '').toString().trim(),
+                scaling: sc,
+                unit: (r.unit || '').toString().trim(),
+                base_value: baseVal,
+                capex_share: +(r.capex_share || 0),
+                notes: (r.notes || '').toString(),
+                units: needUnits.has(sc) ? (step || 1) : 0,
+                step_unit: step || 1,
+              };
+            });
+            setMeasures(normalized);
+          },
+          error: (err)=>{
+            alert('Erreur de lecture CSV : ' + (err?.message || err));
+          }
+        });
+        // reset input so the same file can be selected again
+        e.target.value = '';
+      }
+
+      const changeMeasureUnits = (id, units) => setMeasures(prev => prev.map(m => m.id===id ? {...m, units:+units} : m));
+      const removeMeasure = (id) => setMeasures(prev => prev.filter(m => m.id!==id));
 
       const downloadJSON = () => {
         const payload = {
@@ -127,7 +199,8 @@
             total_indicatif: totalIndicatif,
             floors: montantFloors.map(({id,label,pct,amount})=>({id,label,pct,amount})),
             enveloppe_libre: enveloppeLibre,
-            programme: items,
+            programme_importe: computedMeasures,
+            programme_libre: items,
             total_programme: totalProgramme,
             reliquat: reliquat
           }
@@ -140,16 +213,25 @@
         URL.revokeObjectURL(url);
       };
 
-      const downloadPDF = async () => {
-        // lightweight client PDF via print dialog (no dependency)
-        window.print();
+      const downloadCSVTemplate = () => {
+        const header = ["id","label","category","scaling","unit","base_value","capex_share","notes","min_total","max_total","pop_min","pop_max","step_unit"].join(',');
+        const sample = "abris_velo,Abris vélo sécurisés,Mobilité,per_unit,abri,9500,0.85,Capex 85% / Opex 15%,,,,,1";
+        const blob = new Blob([header+"\n"+sample+"\n"], { type:'text/csv;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'mesures_template.csv';
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
       };
+
+      const downloadPDF = async () => { window.print(); };
 
       return html`
         <div class="space-y-6">
           <div class="flex items-center justify-between flex-wrap gap-3">
-            <h1 class="text-2xl md:text-3xl font-bold">Budget communal — simulateur simple</h1>
+            <h1 class="text-2xl md:text-3xl font-bold">Budget communal — simulateur simple (import CSV)</h1>
             <div class="flex gap-2">
+              <button class="btn bg-gray-200" onClick=${downloadCSVTemplate}>Modèle CSV</button>
               <button class="btn bg-black text-white" onClick=${downloadJSON}>Exporter JSON</button>
               <button class="btn bg-pink-600 text-white" onClick=${downloadPDF}>Imprimer / PDF</button>
             </div>
@@ -231,26 +313,84 @@
             </section>
 
             <section class="card bg-white rounded-2xl p-6">
-              <h2 class="text-xl font-semibold mb-4">3) Programme — à répartir sur l’enveloppe libre</h2>
-              <div class="space-y-3">
-                ${items.map(i => html`
-                  <div key=${i.id} class="border rounded-2xl p-3 flex flex-col md:flex-row gap-3 md:items-center">
-                    <input class="input md:flex-1" value=${i.label} onInput=${(e)=>updateItem(i.id, 'label', e.target.value)} />
-                    <input type="number" class="input md:w-56" value=${i.montant} onInput=${(e)=>updateItem(i.id, 'montant', e.target.value)} min="0" step="1000" />
-                    <button class="btn bg-gray-200" onClick=${()=>removeItem(i.id)}>Supprimer</button>
-                  </div>
-                `)}
-                <button class="btn bg-black text-white" onClick=${addItem}>+ Ajouter une mesure</button>
+              <div class="flex items-center justify-between mb-2">
+                <h2 class="text-xl font-semibold">3) Programme — import & répartition</h2>
+                <div class="flex items-center gap-2">
+                  <input type="file" accept=".csv" ref=${fileRef} style="display:none" onChange=${onFileSelected} />
+                  <button class="btn bg-black text-white" onClick=${onClickImport}>Importer mesures (CSV)</button>
+                  <button class="btn bg-gray-200" onClick=${()=>setShowImportHelp(s=>!s)}>Aide</button>
+                </div>
+              </div>
+              ${showImportHelp && html`
+                <div class="bg-gray-50 rounded-xl p-3 text-sm">
+                  Colonnes attendues : <code>id,label,category,scaling,unit,base_value,capex_share,notes,step_unit</code> (+ autres facultatives).
+                  <br/>Types de <code>scaling</code> : <code>per_inhabitant</code>, <code>per_unit</code>, <code>per_km</code>, <code>per_m2</code>, <code>per_point_lumineux</code>, <code>fixed_estimate</code>.
+                  <br/>Exemple : Abris vélo sécurisés → <code>per_unit</code> avec <code>unit=abri</code>, <code>base_value=9500</code>, <code>capex_share=0.85</code>.
+                </div>
+              `}
+
+              ${computedMeasures.length===0 && html`
+                <div class="rounded-xl border border-dashed p-6 text-center text-sm text-gray-500">
+                  Importez votre CSV (ex. <em>mesures_pop_petite_ville.csv</em>) pour afficher vos mesures ici.
+                </div>
+              `}
+
+              ${computedMeasures.length>0 && html`
+                <div class="space-y-3">
+                  ${computedMeasures.map(m => html`
+                    <div key=${m.id} class="border rounded-2xl p-3">
+                      <div class="flex flex-wrap items-center justify-between gap-2">
+                        <div class="font-medium">${m.label}</div>
+                        <div class="text-xs chip">${m.category || 'Mesure'}</div>
+                      </div>
+                      <div class="grid md:grid-cols-3 gap-3 mt-2 items-end">
+                        <div>
+                          <div class="text-xs muted">Méthode</div>
+                          <div class="text-sm">${m.scaling}${m.unit? ` • ${m.unit}`:''}</div>
+                        </div>
+                        ${needUnits.has(m.scaling) && html`
+                          <div>
+                            <label class="block text-sm mb-1">Quantité (${m.unit||'unités'})</label>
+                            <input type="number" class="input" value=${m.units||0} min="0" step=${m.step_unit||1} onInput=${(e)=>changeMeasureUnits(m.id, e.target.value)} />
+                          </div>
+                        `}
+                        <div class="text-right">
+                          <div class="text-xs muted">Montant calculé</div>
+                          <div class="text-lg font-semibold">${euro(m.montant)}</div>
+                          <div class="text-[11px] muted">CAPEX ${Math.round((+m.capex_share||0)*100)}% / OPEX ${Math.round((1-(+m.capex_share||0))*100)}%</div>
+                        </div>
+                      </div>
+                      ${m.notes && html`<div class="mt-2 text-xs muted">${m.notes}</div>`}
+                      <div class="mt-2 text-right">
+                        <button class="btn bg-gray-200" onClick=${()=>removeMeasure(m.id)}>Retirer</button>
+                      </div>
+                    </div>
+                  `)}
+                </div>
+              `}
+
+              <div class="mt-5">
+                <h3 class="font-medium mb-2">Mesures libres (compléments)</h3>
+                <div class="space-y-3">
+                  ${items.map(i => html`
+                    <div key=${i.id} class="border rounded-2xl p-3 flex flex-col md:flex-row gap-3 md:items-center">
+                      <input class="input md:flex-1" value=${i.label} onInput=${(e)=>updateItem(i.id, 'label', e.target.value)} />
+                      <input type="number" class="input md:w-56" value=${i.montant} onInput=${(e)=>updateItem(i.id, 'montant', e.target.value)} min="0" step="1000" />
+                      <button class="btn bg-gray-200" onClick=${()=>removeItem(i.id)}>Supprimer</button>
+                    </div>
+                  `)}
+                  <button class="btn bg-black text-white" onClick=${addItem}>+ Ajouter une mesure</button>
+                </div>
               </div>
 
               <div class="mt-4 grid md:grid-cols-3 gap-4 text-center">
                 <div class="bg-gray-100 rounded-xl p-3">
-                  <div class="text-xs muted">Total programme</div>
-                  <div class="text-lg font-semibold">${euro(totalProgramme)}</div>
+                  <div class="text-xs muted">Total programme (import)</div>
+                  <div class="text-lg font-semibold">${euro(totalProgrammeImported)}</div>
                 </div>
                 <div class="bg-gray-100 rounded-xl p-3">
-                  <div class="text-xs muted">Enveloppe libre</div>
-                  <div class="text-lg font-semibold">${euro(enveloppeLibre)}</div>
+                  <div class="text-xs muted">Total programme (libre)</div>
+                  <div class="text-lg font-semibold">${euro(totalProgrammeManual)}</div>
                 </div>
                 <div class="bg-gray-100 rounded-xl p-3">
                   <div class="text-xs muted">Reste après programme</div>
@@ -259,7 +399,7 @@
               </div>
             </section>
 
-            <section class="text-center text-xs muted">© POP — Prototype statique. Valeurs indicatives. Hypothèse nationale par habitant modifiable. Ajustez les planchers selon votre commune.</section>
+            <section class="text-center text-xs muted">© POP — Prototype statique. Import CSV pris en charge (Papaparse). Hypothèse €/hab modifiable. Ajustez les planchers et les quantités après import.</section>
           </div>
         </div>
       `;

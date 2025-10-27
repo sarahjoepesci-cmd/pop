@@ -1,1 +1,1 @@
-Version no-build (Preact + HTM). Aucune dépendance à Babel. Prête pour Vercel/Squarespace.
+Simulateur simple (no-build) avec import CSV (Papaparse). Ajoutez vos mesures depuis le CSV, éditez quantités, calcule automatiquement selon population.
