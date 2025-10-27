@@ -1,1 +1,1 @@
-Simulateur simple (no-build) avec import CSV (Papaparse). Ajoutez vos mesures depuis le CSV, éditez quantités, calcule automatiquement selon population.
+Simulateur simple (no-build) avec import automatique du CSV public Google Sheets fourni. Gère dépenses & recettes (base_value négatif ou catégorie 'Recettes').
