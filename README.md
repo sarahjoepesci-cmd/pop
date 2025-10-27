@@ -1,1 +1,1 @@
-Remplacez votre index.html par celui-ci (Vercel 'Other' ou Netlify). Ajoute 'Budget disponible' AVANT/APRÈS, auto-budget OFGL et DGF (si dispo).
+Remplacez votre index.html. Cette version rétablit l'autocomplete de commune, le bloc Sièges (barème complet), l'auto-budget OFGL/DGF et le 'Budget disponible'.
