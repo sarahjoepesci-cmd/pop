@@ -1,112 +1,71 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="fr">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Simulateur POP — Import Google CSV (robuste)</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>POP — Simulateur (UMD sans modules)</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
   <style>
-    body { font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
-    .card { box-shadow: 0 8px 24px rgba(0,0,0,0.08); }
-    .chip { border-radius: 9999px; padding: 2px 10px; background: #f3f4f6; font-size: 12px; }
-    .dropdown { position: absolute; z-index: 40; width: 100%; background: white; border: 1px solid #e5e7eb; border-radius: 0.75rem; box-shadow: 0 12px 32px rgba(0,0,0,0.08); }
-    .dropdown-item { padding: 8px 12px; cursor: pointer; }
-    .dropdown-item:hover { background: #f9fafb; }
-    .muted { color: #6b7280; }
-    .input { width: 100%; border: 1px solid #e5e7eb; border-radius: 0.75rem; padding: 0.5rem 0.75rem; }
-    .btn { border-radius: 1rem; padding: 0.5rem 0.9rem; }
-    #errorOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); color: #fff; padding: 20px; display:none; z-index: 9999; overflow:auto; }
-    #errorOverlay pre { white-space: pre-wrap; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    .card { box-shadow: 0 8px 24px rgba(0,0,0,.08); }
+    #err { white-space: pre-wrap; color:#fff; background:#111827; padding:12px; border-radius:12px; display:none; }
   </style>
 </head>
 <body class="bg-gray-50">
-  <div id="errorOverlay"><div class="max-w-3xl mx-auto"><h2 class="text-xl font-semibold mb-2">Erreur JavaScript capturée</h2><pre id="errorText"></pre></div></div>
-  <div class="text-center text-xs text-gray-500 pt-2" id="health">Chargement… (health check)</div>
-  <main id="root" class="p-6 md:p-10 max-w-6xl mx-auto"></main>
+  <div class="max-w-5xl mx-auto p-4">
+    <div id="health" class="text-xs text-gray-500">Health: page HTML chargée.</div>
+    <div id="err"></div>
+    <div id="root"></div>
+  </div>
 
-  <!-- UMD dependencies -->
+  <!-- UMD libs -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 
   <script>
-    // Error overlay
-    (function(){
-      function showError(msg, src, line, col, err){
-        const overlay = document.getElementById('errorOverlay');
-        const pre = document.getElementById('errorText');
-        overlay.style.display = 'block';
-        pre.textContent = (msg||'') + "\n" + (src? (src+":"+line+":"+col):"") + "\n\n" + (err && err.stack ? err.stack : String(err||''));
-      }
-      window.onerror = function(msg, src, line, col, err){ showError(msg, src, line, col, err); };
-      window.onunhandledrejection = function(e){ showError('Unhandled promise rejection', '', '', '', e.reason||e); };
-    })();
-  </script>
+    // Hard error catcher
+    window.onerror = function(msg, src, line, col, err){
+      const el = document.getElementById('err');
+      el.style.display = 'block';
+      el.textContent = 'Erreur: ' + msg + '\\n' + (src||'') + ':' + (line||'') + ':' + (col||'') + '\\n' + (err && err.stack ? err.stack : '');
+    };
+    window.onunhandledrejection = function(e){
+      const el = document.getElementById('err');
+      el.style.display = 'block';
+      el.textContent = 'Unhandled rejection: ' + (e.reason && e.reason.stack ? e.reason.stack : e.reason);
+    };
 
-  <script type="module">
-    import { html, render, useState, useMemo, useEffect, useRef } from 'https://unpkg.com/htm/preact/standalone.module.js';
-
-    const CSV_DEFAULT = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTJiCwyahttqXaLyaIjNFZo8y4o96DDuRpS4rfHsw6x74gjm7iZtn2xRGn2P7tuHtjjj3633n7dTgzv/pub?output=csv";
-
-    const euro = (n) => (n ?? 0).toLocaleString('fr-FR', { style:'currency', currency:'EUR', maximumFractionDigits:0 });
-    const clamp = (n,a,b) => Math.max(a, Math.min(b,n));
-
-    function useDebouncedValue(value, delay=300) { const [v, setV] = useState(value); useEffect(()=>{ const t=setTimeout(()=>setV(value),delay); return ()=>clearTimeout(t); },[value,delay]); return v; }
-
-    function CommuneAutocomplete({ value, onSelect, onPopulation }){
-      const [query, setQuery] = useState(value || '');
-      const [list, setList] = useState([]);
-      const [open, setOpen] = useState(false);
-      const debounced = useDebouncedValue(query, 300);
-      const ref = useRef(null);
-      useEffect(()=>{
-        if(!debounced || debounced.length<2){ setList([]); return; }
-        const c = new AbortController();
-        fetch(`https://geo.api.gouv.fr/communes?nom=${encodeURIComponent(debounced)}&fields=nom,code,population&boost=population&limit=10`, { signal:c.signal })
-          .then(r=>r.json()).then(d=>{ setList(Array.isArray(d)?d:[]); setOpen(true);}).catch(()=>{});
-        return ()=>c.abort();
-      }, [debounced]);
-      useEffect(()=>{ function onClick(e){ if(ref.current && !ref.current.contains(e.target)) setOpen(false); } document.addEventListener('click', onClick); return ()=>document.removeEventListener('click', onClick); }, []);
-      return html`
-        <div class="relative" ref=${ref}>
-          <input class="input" placeholder="ex. Apt" value=${query} onInput=${(e)=>setQuery(e.target.value)} onFocus={()=>setOpen(true)} />
-          ${open && list.length>0 && html`
-            <div class="dropdown mt-1">
-              ${list.map(c => html`
-                <div key=${c.code} class="dropdown-item" onClick={()=>{ setQuery(c.nom); setOpen(false); onSelect && onSelect(c); onPopulation && onPopulation(c.population||null); }}>
-                  <div class="font-medium">${c.nom}</div>
-                  <div class="text-xs muted">INSEE ${c.code} • Pop. ${c.population?.toLocaleString('fr-FR')||'?'}</div>
-                </div>
-              `)}
-            </div>
-          `}
-        </div>
-      `;
+    // Helpers
+    function euro(n){ return (n||0).toLocaleString('fr-FR', {style:'currency', currency:'EUR', maximumFractionDigits:0}); }
+    function clamp(n,a,b){ return Math.max(a, Math.min(b,n)); }
+    function seatsFromPopulation(pop){
+      if(pop==null || isNaN(pop)) return null;
+      const rules = [
+        { min:0,max:99,seats:7},{min:100,max:499,seats:11},{min:500,max:1499,seats:15},
+        { min:1500,max:2499,seats:19},{min:2500,max:3499,seats:23},{min:3500,max:4999,seats:27},
+        { min:5000,max:9999,seats:29},{min:10000,max:19999,seats:33},{min:20000,max:29999,seats:35},
+        { min:30000,max:39999,seats:39},{min:40000,max:49999,seats:43},{min:50000,max:59999,seats:45},
+        { min:60000,max:79999,seats:49},{min:80000,max:99999,seats:53},{min:100000,max:149999,seats:55},
+        { min:150000,max:199999,seats:59},{min:200000,max:249999,seats:61},{min:250000,max:299999,seats:65},
+        { min:300000,max:1e12,seats:69},
+      ];
+      const r = rules.find(r => pop>=r.min && pop<=r.max);
+      return r? r.seats : null;
     }
-
-    const seatRules = [
-      { min: 0, max: 99, seats: 7 }, { min: 100, max: 499, seats: 11 }, { min: 500, max: 1499, seats: 15 },
-      { min: 1500, max: 2499, seats: 19 }, { min: 2500, max: 3499, seats: 23 }, { min: 3500, max: 4999, seats: 27 },
-      { min: 5000, max: 9999, seats: 29 }, { min: 10000, max: 19999, seats: 33 }, { min: 20000, max: 29999, seats: 35 },
-      { min: 30000, max: 39999, seats: 39 }, { min: 40000, max: 49999, seats: 43 }, { min: 50000, max: 59999, seats: 45 },
-      { min: 60000, max: 79999, seats: 49 }, { min: 80000, max: 99999, seats: 53 }, { min: 100000, max: 149999, seats: 55 },
-      { min: 150000, max: 199999, seats: 59 }, { min: 200000, max: 249999, seats: 61 }, { min: 250000, max: 299999, seats: 65 },
-      { min: 300000, max: Infinity, seats: 69 },
-    ];
-    const seatsFromPopulation = (pop) => { if(pop==null||isNaN(pop)) return null; const r=seatRules.find(r=>pop>=r.min && pop<=r.max); return r? r.seats:null; };
-
-    const needUnits = new Set(['per_unit','per_km','per_m2','per_point_lumineux']);
-    function isRevenue(m) {
+    function isRevenue(m){
       const cat = (m.category||'').toLowerCase();
       return cat.includes('recette') || (+m.base_value||0) < 0;
+    }
+    function needUnits(scaling){
+      return ['per_unit','per_km','per_m2','per_point_lumineux'].indexOf((scaling||'').trim())>=0;
     }
     function computeAmount(m, pop){
       const base = +m.base_value || 0;
       const units = +m.units || 0;
       let val = 0;
-      switch(m.scaling){
-        case 'per_inhabitant': val = base * (pop || 0); break;
+      switch((m.scaling||'').trim()){
+        case 'per_inhabitant': val = base * (pop||0); break;
         case 'per_unit':
         case 'per_km':
         case 'per_m2':
@@ -117,312 +76,169 @@
       return val;
     }
 
-    function App(){
-      const [commune, setCommune] = useState({ nom:'', insee:'', population:null });
-      const [population, setPopulation] = useState(null);
-      const eurosParHabDefault = 1474;
-      const [eurosParHab, setEurosParHab] = useState(eurosParHabDefault);
-      const [floors, setFloors] = useState([
-        { id:'personnel', label:'Personnel communal (masse salariale)', pct:35 },
-        { id:'voirie', label:'Voirie communale (entretien minimum)', pct:8 },
-        { id:'ecoles', label:'Écoles maternelles & élémentaires', pct:7 },
-        { id:'services', label:'Services obligatoires (état civil, police admin.)', pct:5 },
-        { id:'energie', label:'Énergie & bâtiments communaux', pct:6 },
-        { id:'dette', label:'Annuité de dette (intérêts + capital)', pct:6 },
-      ]);
+    (function(){
+      document.getElementById('health').textContent = 'Health: scripts UMD ok, React='+!!window.React+', Papa='+!!window.Papa;
 
-      const [csvUrl, setCsvUrl] = useState(CSV_DEFAULT);
-      const [measures, setMeasures] = useState([]);
-      const [loadingCSV, setLoadingCSV] = useState(false);
-      const [csvError, setCsvError] = useState(null);
-      const fileRef = useRef(null);
+      const e = React.createElement;
+      const { useState, useMemo, useEffect } = React;
 
-      const popRef = useMemo(()=> population ?? commune.population ?? 0, [population, commune]);
-      const seats = useMemo(()=> seatsFromPopulation(popRef), [popRef]);
+      function App(){
+        const [population, setPopulation] = useState(5000);
+        const [eurHab, setEurHab] = useState(1474);
+        const [floors, setFloors] = useState([
+          { id:'personnel', label:'Personnel', pct:35 },
+          { id:'voirie', label:'Voirie', pct:8 },
+          { id:'ecoles', label:'Écoles', pct:7 },
+          { id:'services', label:'Services obligatoires', pct:5 },
+          { id:'energie', label:'Énergie & bâtiments', pct:6 },
+          { id:'dette', label:'Dette (annuité)', pct:6 },
+        ]);
+        const [csvUrl, setCsvUrl] = useState("https://docs.google.com/spreadsheets/d/e/2PACX-1vTJiCwyahttqXaLyaIjNFZo8y4o96DDuRpS4rfHsw6x74gjm7iZtn2xRGn2P7tuHtjjj3633n7dTgzv/pub?output=csv");
+        const [rows, setRows] = useState([]);
+        const [errCsv, setErrCsv] = useState(null);
+        const [loading, setLoading] = useState(false);
 
-      const totalPctFloors = useMemo(()=> floors.reduce((s,f)=>s+(+f.pct||0),0), [floors]);
-      const totalIndicatif = useMemo(()=> (popRef||0) * (+eurosParHab||0), [popRef, eurosParHab]);
-      const montantFloors = useMemo(()=> floors.map(f=> ({...f, amount: totalIndicatif * Math.max(0, Math.min(1, (+f.pct||0)/100))})), [floors, totalIndicatif]);
-      const sommeFloors = useMemo(()=> montantFloors.reduce((s,f)=> s + f.amount, 0), [montantFloors]);
-      const enveloppeLibre = useMemo(()=> Math.max(0, totalIndicatif - sommeFloors), [totalIndicatif, sommeFloors]);
+        const seats = useMemo(()=> seatsFromPopulation(+population||0), [population]);
+        const totalIndicatif = useMemo(()=> (+population||0) * (+eurHab||0), [population, eurHab]);
+        const sommePcts = useMemo(()=> floors.reduce((s,f)=> s+(+f.pct||0), 0), [floors]);
+        const sommeFloors = useMemo(()=> floors.reduce((s,f)=> s + totalIndicatif * clamp((+f.pct||0)/100,0,1),0), [floors, totalIndicatif]);
+        const enveloppeLibre = useMemo(()=> Math.max(0, totalIndicatif - sommeFloors), [totalIndicatif, sommeFloors]);
 
-      const computedMeasures = useMemo(()=> measures.map(m => ({...m, montant: computeAmount(m, popRef), isRevenue: isRevenue(m) })), [measures, popRef]);
-      const totalDepenses = useMemo(()=> computedMeasures.reduce((s,m)=> s + (m.montant>0? m.montant: 0), 0), [computedMeasures]);
-      const totalRecettes = useMemo(()=> computedMeasures.reduce((s,m)=> s + (m.montant<0? -m.montant: 0), 0), [computedMeasures]);
-      const totalProgramme = useMemo(()=> totalDepenses - totalRecettes, [totalDepenses, totalRecettes]);
-      const reliquat = useMemo(()=> Math.max(0, enveloppeLibre - totalProgramme), [enveloppeLibre, totalProgramme]);
+        const computed = useMemo(()=> rows.map(r=>{
+          const R = Object.assign({}, r);
+          R.units = needUnits(R.scaling) ? (+R.step_unit||1) : 0;
+          R.montant = computeAmount(R, +population||0);
+          R.isRevenue = isRevenue(R);
+          return R;
+        }), [rows, population]);
+        const totalDep = useMemo(()=> computed.reduce((s,m)=> s + (m.montant>0? m.montant:0),0), [computed]);
+        const totalRec = useMemo(()=> computed.reduce((s,m)=> s + (m.montant<0? -m.montant:0),0), [computed]);
+        const totalNet = useMemo(()=> totalDep - totalRec, [totalDep, totalRec]);
+        const reliquat = useMemo(()=> Math.max(0, enveloppeLibre - totalNet), [enveloppeLibre, totalNet]);
 
-      const updateFloor = (id, pct) => setFloors(prev => prev.map(f=> f.id===id ? ({...f, pct:+pct}) : f));
-
-      async function loadCsvFromUrl(url){
-        setLoadingCSV(true); setCsvError(null);
-        try {
-          const res = await fetch(url, { cache:'no-store' });
-          if(!res.ok) throw new Error('HTTP ' + res.status);
-          const text = await res.text();
-          const parsed = window.Papa.parse(text, { header:true, skipEmptyLines:true });
-          if(parsed.errors && parsed.errors.length) console.warn('Papa errors', parsed.errors);
-          const rows = parsed.data || [];
-          const normalized = rows.map((r, idx) => ({ 
-            id: (r.id || `m_${idx}`).toString().trim(),
-            label: (r.label || `Mesure ${idx+1}`).toString().trim(),
-            category: (r.category || '').toString().trim(),
-            scaling: (r.scaling || '').toString().trim(),
-            unit: (r.unit || '').toString().trim(),
-            base_value: +(r.base_value||0),
-            capex_share: +(r.capex_share || 0),
-            notes: (r.notes || '').toString(),
-            units: new Set(['per_unit','per_km','per_m2','per_point_lumineux']).has((r.scaling||'').trim()) ? (+(r.step_unit||1)) : 0,
-            step_unit: +(r.step_unit||1),
-          }));
-          setMeasures(normalized);
-        } catch(e){
-          console.error(e);
-          setCsvError(e?.message || String(e));
-        } finally {
-          setLoadingCSV(false);
+        function loadCsv(){
+          setLoading(true); setErrCsv(null);
+          fetch(csvUrl, { cache:'no-store' })
+            .then(r => { if(!r.ok) throw new Error('HTTP '+r.status); return r.text(); })
+            .then(text => {
+              const p = window.Papa.parse(text, { header:true, skipEmptyLines:true });
+              if(p.errors && p.errors.length) console.warn('Papa errors', p.errors);
+              const data = (p.data||[]).map((r,idx)=> ({
+                id: (r.id || ('m_'+idx)).toString().trim(),
+                label: (r.label || ('Mesure '+(idx+1))).toString().trim(),
+                category: (r.category || '').toString().trim(),
+                scaling: (r.scaling || '').toString().trim(),
+                unit: (r.unit || '').toString().trim(),
+                base_value: +(r.base_value || 0),
+                capex_share: +(r.capex_share || 0),
+                notes: (r.notes || '').toString(),
+                step_unit: +(r.step_unit || 1)
+              }));
+              setRows(data);
+            })
+            .catch(err => setErrCsv(err.message||String(err)))
+            .finally(()=> setLoading(false));
         }
+
+        useEffect(loadCsv, []);
+
+        function setFloorPct(id, pct){
+          setFloors(prev => prev.map(f => f.id===id ? Object.assign({}, f, { pct: +pct }) : f));
+        }
+
+        return e('div', { className:'space-y-4' },
+          e('div', { className:'card bg-white rounded-2xl p-4' },
+            e('div', { className:'text-lg font-semibold mb-2' }, '1) Paramètres de base (UMD diag)'),
+            e('div', { className:'grid md:grid-cols-4 gap-3' },
+              e('div', null,
+                e('div', { className:'text-sm mb-1' }, 'Population'),
+                e('input', { className:'input w-full border rounded-lg p-2', type:'number', value: population, onChange: (ev)=> setPopulation(ev.target.value) })
+              ),
+              e('div', null,
+                e('div', { className:'text-sm mb-1' }, 'Hypothèse €/hab'),
+                e('input', { className:'input w-full border rounded-lg p-2', type:'number', value: eurHab, onChange: (ev)=> setEurHab(ev.target.value) })
+              ),
+              e('div', { className:'bg-gray-50 rounded-xl p-3 text-center' },
+                e('div', { className:'text-xs text-gray-500' }, 'Budget indicatif'),
+                e('div', { className:'text-xl font-bold' }, euro(totalIndicatif))
+              ),
+              e('div', { className:'bg-gray-50 rounded-xl p-3 text-center' },
+                e('div', { className:'text-xs text-gray-500' }, 'Sièges (est.)'),
+                e('div', { className:'text-xl font-bold' }, seats==null?'—':String(seats))
+              ),
+            ),
+            e('div', { className:'text-xs text-gray-500 mt-1' }, "NB: moyenne nationale 1 474 €/hab (INSEE 2023).")
+          ),
+
+          e('div', { className:'card bg-white rounded-2xl p-4' },
+            e('div', { className:'text-lg font-semibold mb-2' }, '2) Impondérables'),
+            e('div', { className:'grid md:grid-cols-3 gap-3' },
+              floors.map(f => e('div', { key:f.id, className:'bg-gray-50 rounded-xl p-3' },
+                e('div', { className:'flex items-center justify-between' },
+                  e('div', { className:'font-medium' }, f.label),
+                  e('div', null, f.pct, '%')
+                ),
+                e('input', { type:'range', min:0, max:100, value:f.pct, onChange:(ev)=> setFloorPct(f.id, ev.target.value), className:'w-full my-2' }),
+                e('div', { className:'text-sm text-gray-600' }, 'Plancher : ', e('strong', null, euro(totalIndicatif * (f.pct/100))))
+              ))
+            ),
+            e('div', { className:'grid md:grid-cols-3 gap-3 text-center mt-3' },
+              e('div', { className:'bg-gray-100 rounded-xl p-3' },
+                e('div', { className:'text-xs text-gray-500' }, '% impondérables'),
+                e('div', { className:'text-lg font-semibold' }, String(Math.round(sommePcts)), '%')
+              ),
+              e('div', { className:'bg-gray-100 rounded-xl p-3' },
+                e('div', { className:'text-xs text-gray-500' }, 'Somme impondérables'),
+                e('div', { className:'text-lg font-semibold' }, euro(sommeFloors))
+              ),
+              e('div', { className:'bg-gray-100 rounded-xl p-3' },
+                e('div', { className:'text-xs text-gray-500' }, 'Enveloppe libre'),
+                e('div', { className:'text-lg font-semibold' }, euro(enveloppeLibre))
+              ),
+            )
+          ),
+
+          e('div', { className:'card bg-white rounded-2xl p-4' },
+            e('div', { className:'flex items-center justify-between' },
+              e('div', { className:'text-lg font-semibold' }, '3) Programme — import automatique (Google Sheets CSV)'),
+              e('div', { className:'flex gap-2' },
+                e('input', { className:'input border rounded-lg p-2 w-80', value: csvUrl, onChange:(ev)=> setCsvUrl(ev.target.value) }),
+                e('button', { className:'btn bg-gray-200', onClick: loadCsv }, 'Recharger')
+              )
+            ),
+            loading ? e('div', { className:'text-sm text-gray-500 mt-2' }, 'Chargement CSV…') : null,
+            errCsv ? e('div', { className:'text-sm text-red-600 mt-2' }, 'Erreur CSV: ', errCsv) : null,
+            rows.length===0 && !loading && !errCsv ? e('div', { className:'text-sm text-gray-500 mt-2' }, 'Aucune mesure chargée.') : null,
+            rows.length>0 ? e('div', { className:'mt-3 text-sm text-gray-700' }, rows.length, ' mesures chargées.') : null,
+            rows.length>0 ? e('div', { className:'mt-2 grid gap-2' },
+              computed.slice(0,10).map(m => e('div', { key:m.id, className:'border rounded-xl p-2 flex items-center justify-between' },
+                e('div', null, m.label, ' ', e('span', { className:'text-xs text-gray-500' }, m.category||'')),
+                e('div', null, m.isRevenue ? e('span', { className:'text-green-700 font-semibold' }, '+ ', euro(Math.abs(m.montant))) : e('span', { className:'font-semibold' }, euro(m.montant)))
+              ))
+            ) : null,
+            rows.length>0 ? e('div', { className:'grid md:grid-cols-3 gap-3 text-center mt-3' },
+              e('div', { className:'bg-gray-100 rounded-xl p-3' },
+                e('div', { className:'text-xs text-gray-500' }, 'Total dépenses'),
+                e('div', { className:'text-lg font-semibold' }, euro(totalDep))
+              ),
+              e('div', { className:'bg-gray-100 rounded-xl p-3' },
+                e('div', { className:'text-xs text-gray-500' }, 'Total recettes'),
+                e('div', { className:'text-lg font-semibold text-green-700' }, '+ ', euro(totalRec))
+              ),
+              e('div', { className:'bg-gray-100 rounded-xl p-3' },
+                e('div', { className:'text-xs text-gray-500' }, 'Net programme'),
+                e('div', { className:'text-lg font-semibold' }, euro(totalNet))
+              ),
+            ) : null
+          ),
+
+          e('div', { className:'text-center text-xs text-gray-500' }, '© POP — UMD minimal pour diagnostic (sans modules / Babel).')
+        );
       }
 
-      useEffect(()=>{
-        // health ping
-        const h = document.getElementById('health');
-        if(h) h.textContent = 'Scripts chargés — initialisation ok';
-        loadCsvFromUrl(csvUrl);
-      }, []);
-
-      function onClickImport(){ fileRef.current?.click(); }
-      function onFileSelected(e){
-        const f = e.target.files?.[0]; if(!f) return;
-        window.Papa.parse(f, { header:true, skipEmptyLines:true, complete:(res)=>{
-          const rows = res.data || [];
-          const normalized = rows.map((r, idx) => ({ 
-            id: (r.id || `m_${idx}`).toString().trim(),
-            label: (r.label || `Mesure ${idx+1}`).toString().trim(),
-            category: (r.category || '').toString().trim(),
-            scaling: (r.scaling || '').toString().trim(),
-            unit: (r.unit || '').toString().trim(),
-            base_value: +(r.base_value||0),
-            capex_share: +(r.capex_share || 0),
-            notes: (r.notes || '').toString(),
-            units: new Set(['per_unit','per_km','per_m2','per_point_lumineux']).has((r.scaling||'').trim()) ? (+(r.step_unit||1)) : 0,
-            step_unit: +(r.step_unit||1),
-          }));
-          setMeasures(normalized);
-        }, error:(err)=>{ alert('Erreur CSV: ' + (err?.message||err)); } });
-        e.target.value = '';
-      }
-
-      const changeMeasureUnits = (id, units) => setMeasures(prev => prev.map(m => m.id===id ? ({...m, units:+units}) : m));
-      const removeMeasure = (id) => setMeasures(prev => prev.filter(m => m.id!==id));
-
-      const downloadJSON = () => {
-        const payload = {
-          commune: { nom: commune.nom, insee: commune.insee, population: popRef },
-          csv_source: csvUrl,
-          hypotheses: { euros_par_habitant:+eurosParHab, floors_pct: Object.fromEntries(floors.map(f=>[f.id,+f.pct])), total_pct_floors: totalPctFloors },
-          calculs: {
-            total_indicatif: totalIndicatif,
-            floors: montantFloors.map(({id,label,pct,amount})=>({id,label,pct,amount})),
-            enveloppe_libre: enveloppeLibre,
-            programme_importe: computedMeasures,
-            totals: { depenses: totalDepenses, recettes: totalRecettes, total_net: totalProgramme },
-            reliquat: reliquat
-          }
-        };
-        const blob = new Blob([JSON.stringify(payload,null,2)], { type:'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url; a.download = `simulation_budget_simple_${(commune.nom||'commune').replace(/\s+/g,'_')}.json`;
-        document.body.appendChild(a); a.click(); a.remove();
-        URL.revokeObjectURL(url);
-      };
-
-      const downloadPDF = () => { window.print(); };
-
-      // Render
-      render(html`<${Main}
-        commune=${commune} setCommune=${setCommune}
-        population=${population} setPopulation=${setPopulation}
-        eurosParHab=${eurosParHab} setEurosParHab=${setEurosParHab}
-        floors=${floors} setFloors=${setFloors}
-        popRef=${popRef} seats=${seats}
-        totalPctFloors=${totalPctFloors} totalIndicatif=${totalIndicatif}
-        montantFloors=${montantFloors} sommeFloors=${sommeFloors} enveloppeLibre=${enveloppeLibre}
-        computedMeasures=${computedMeasures} totalDepenses=${totalDepenses} totalRecettes=${totalRecettes}
-        totalProgramme=${totalProgramme} reliquat=${reliquat}
-        csvUrl=${csvUrl} setCsvUrl=${setCsvUrl}
-        loadCsvFromUrl=${loadCsvFromUrl}
-        fileRef=${fileRef} onClickImport=${onClickImport} onFileSelected=${onFileSelected}
-        changeMeasureUnits=${changeMeasureUnits} removeMeasure=${removeMeasure}
-        downloadJSON=${downloadJSON} downloadPDF=${downloadPDF}
-      />`, document.getElementById('root'));
-    }
-
-    function Main(props){
-      const {
-        commune, setCommune, population, setPopulation,
-        eurosParHab, setEurosParHab, floors, setFloors,
-        popRef, seats, totalPctFloors, totalIndicatif, montantFloors, sommeFloors, enveloppeLibre,
-        computedMeasures, totalDepenses, totalRecettes, totalProgramme, reliquat,
-        csvUrl, setCsvUrl, loadCsvFromUrl,
-        fileRef, onClickImport, onFileSelected,
-        changeMeasureUnits, removeMeasure,
-        downloadJSON, downloadPDF
-      } = props;
-
-      const updateFloor = (id, pct) => setFloors(prev => prev.map(f=> f.id===id ? ({...f, pct:+pct}) : f));
-
-      return html`
-        <div class="space-y-6">
-          <div class="flex items-center justify-between flex-wrap gap-3">
-            <h1 class="text-2xl md:text-3xl font-bold">Budget communal — import auto (Google Sheets CSV)</h1>
-            <div class="flex gap-2">
-              <button class="btn bg-black text-white" onClick=${downloadJSON}>Exporter JSON</button>
-              <button class="btn bg-pink-600 text-white" onClick=${downloadPDF}>Imprimer / PDF</button>
-            </div>
-          </div>
-
-          <div id="pdf-area" class="space-y-6">
-            <section class="card bg-white rounded-2xl p-6">
-              <h2 class="text-xl font-semibold mb-4">1) Commune</h2>
-              <div class="grid md:grid-cols-4 gap-4 items-start">
-                <div class="md:col-span-2">
-                  <label class="block text-sm mb-1">Nom de la commune (auto-complétion)</label>
-                  ${html`<${CommuneAutocomplete}
-                    value=${commune.nom}
-                    onSelect=${(c)=>{ setCommune({ nom:c.nom, insee:c.code, population:c.population||null }); setPopulation(c.population||null); }}
-                    onPopulation=${(p)=>setPopulation(p)}
-                  />`}
-                </div>
-                <div>
-                  <label class="block text-sm mb-1">Population (éditable)</label>
-                  <input type="number" class="input" value=${popRef||''} onInput=${(e)=>setPopulation(e.target.value? +e.target.value : null)} min="0" />
-                </div>
-                <div class="bg-gray-100 rounded-xl p-3 text-center">
-                  <div class="text-xs uppercase muted">Sièges estimés</div>
-                  <div class="text-2xl font-bold">${seats ?? '—'}</div>
-                  <div class="text-xs muted">estimation par tranches (CGCT)</div>
-                </div>
-              </div>
-              <div class="mt-2 text-xs muted">Hypothèse moyenne nationale : <strong>1 474 €/hab</strong> (INSEE 2023, dépenses totales des communes). Ajustable ci-dessous.</div>
-            </section>
-
-            <section class="card bg-white rounded-2xl p-6">
-              <h2 class="text-xl font-semibold mb-4">2) Hypothèses & impondérables</h2>
-              <div class="grid md:grid-cols-3 gap-4">
-                <div>
-                  <label class="block text-sm mb-1">Benchmark national (€/hab)</label>
-                  <input type="number" class="input" value=${eurosParHab} onInput=${(e)=>setEurosParHab(+e.target.value)} min="0" step="10" />
-                  <p class="text-xs muted mt-1">Source indic. INSEE (2023). Adaptez selon le profil territorial si besoin.</p>
-                </div>
-                <div class="bg-gray-50 rounded-xl p-3 text-center">
-                  <div class="text-xs muted mb-1">Budget indicatif total</div>
-                  <div class="text-2xl font-bold">${euro(totalIndicatif)}</div>
-                  <div class="text-xs muted">= population × €/hab</div>
-                </div>
-                <div class="bg-gray-50 rounded-xl p-3 text-center">
-                  <div class="text-xs muted mb-1">% impondérables (somme)</div>
-                  <div class=${"text-2xl font-bold " + (totalPctFloors>95? "text-red-600": "")}>${totalPctFloors.toFixed(0)}%</div>
-                  <div class="text-xs muted">évitez de dépasser ~80–90%</div>
-                </div>
-              </div>
-
-              <div class="mt-4 grid md:grid-cols-4 gap-4 text-center">
-                <div class="bg-gray-100 rounded-xl p-3">
-                  <div class="text-xs muted">Somme impondérables</div>
-                  <div class="text-lg font-semibold">${euro(sommeFloors)}</div>
-                </div>
-                <div class="bg-gray-100 rounded-xl p-3">
-                  <div class="text-xs muted">Enveloppe libre</div>
-                  <div class={"text-lg font-semibold " + (enveloppeLibre<=0 ? "text-red-600" : "")}>${euro(enveloppeLibre)}</div>
-                </div>
-                <div class="bg-gray-100 rounded-xl p-3">
-                  <div class="text-xs muted">Total dépenses (programme)</div>
-                  <div class="text-lg font-semibold">${euro(totalProgramme + totalRecettes)}</div>
-                </div>
-                <div class="bg-gray-100 rounded-xl p-3">
-                  <div class="text-xs muted">Total recettes (programme)</div>
-                  <div class="text-lg font-semibold text-green-700">+ ${euro(totalRecettes)}</div>
-                </div>
-              </div>
-            </section>
-
-            <section class="card bg-white rounded-2xl p-6">
-              <div class="flex items-center justify-between mb-2">
-                <h2 class="text-xl font-semibold">3) Programme — import automatique</h2>
-                <div class="flex items-center gap-2">
-                  <input class="input md:w-80" value=${csvUrl} onInput=${(e)=>setCsvUrl(e.target.value)} placeholder="URL CSV public Google Sheets" />
-                  <button class="btn bg-gray-200" onClick={()=>loadCsvFromUrl(csvUrl)}>Recharger</button>
-                  <input type="file" accept=".csv" ref=${fileRef} style="display:none" onChange=${onFileSelected} />
-                  <button class="btn bg-black text-white" onClick=${onClickImport}>Importer CSV (manuel)</button>
-                </div>
-              </div>
-
-              ${loadingCSV && html`<div class="text-sm text-gray-500">Chargement du CSV…</div>`}
-              ${csvError && html`<div class="text-sm text-red-600">Erreur CSV : ${csvError}</div>`}
-
-              ${computedMeasures.length===0 && !loadingCSV && html`
-                <div class="rounded-xl border border-dashed p-6 text-center text-sm text-gray-500">
-                  Aucune mesure chargée. Vérifiez l’URL CSV (public) ou importez un fichier.
-                </div>
-              `}
-
-              ${computedMeasures.length>0 && html`
-                <div class="space-y-3">
-                  ${computedMeasures.map(m => html`
-                    <div key=${m.id} class="border rounded-2xl p-3">
-                      <div class="flex flex-wrap items-center justify-between gap-2">
-                        <div class="font-medium">${m.label}</div>
-                        <div class="text-xs chip">${m.category || 'Mesure'}</div>
-                      </div>
-                      <div class="grid md:grid-cols-3 gap-3 mt-2 items-end">
-                        <div>
-                          <div class="text-xs muted">Méthode</div>
-                          <div class="text-sm">${m.scaling}${m.unit? ` • ${m.unit}`:''}</div>
-                        </div>
-                        ${new Set(['per_unit','per_km','per_m2','per_point_lumineux']).has(m.scaling) && html`
-                          <div>
-                            <label class="block text-sm mb-1">Quantité (${m.unit||'unités'})</label>
-                            <input type="number" class="input" value=${m.units||0} min="0" step=${m.step_unit||1} onInput=${(e)=>changeMeasureUnits(m.id, e.target.value)} />
-                          </div>
-                        `}
-                        <div class="text-right">
-                          <div class="text-xs muted">Montant ${m.isRevenue? ' (recette)':' calculé'}</div>
-                          <div class={"text-lg font-semibold " + (m.isRevenue? "text-green-700":"")}>${m.isRevenue? '+' : ''}${euro(Math.abs(m.montant))}</div>
-                          ${!m.isRevenue && html`<div class="text-[11px] muted">CAPEX ${Math.round((+m.capex_share||0)*100)}% / OPEX ${Math.round((1-(+m.capex_share||0))*100)}%</div>`}
-                        </div>
-                      </div>
-                      ${m.notes && html`<div class="mt-2 text-xs muted">${m.notes}</div>`}
-                      <div class="mt-2 text-right">
-                        <button class="btn bg-gray-200" onClick={()=>removeMeasure(m.id)}>Retirer</button>
-                      </div>
-                    </div>
-                  `)}
-                </div>
-
-                <div class="mt-4 grid md:grid-cols-3 gap-4 text-center">
-                  <div class="bg-gray-100 rounded-xl p-3">
-                    <div class="text-xs muted">Total net programme</div>
-                    <div class="text-lg font-semibold">${euro(totalProgramme)}</div>
-                  </div>
-                  <div class="bg-gray-100 rounded-xl p-3">
-                    <div class="text-xs muted">Reste après programme</div>
-                    <div class={"text-lg font-semibold " + (reliquat<0 ? "text-red-600": "")}>${euro(reliquat)}</div>
-                  </div>
-                  <div class="bg-gray-100 rounded-xl p-3">
-                    <div class="text-xs muted">Source CSV</div>
-                    <div class="text-xs break-all">${csvUrl}</div>
-                  </div>
-                </div>
-              `}
-            </section>
-
-            <section class="text-center text-xs muted">© POP — Prototype statique. Import Google Sheets CSV public (auto), recettes supportées (montants négatifs ou catégorie “Recettes”).</section>
-          </div>
-        </div>
-      `;
-    }
+      const root = ReactDOM.createRoot(document.getElementById('root'));
+      root.render(React.createElement(App));
+    })();
   </script>
 </body>
 </html>

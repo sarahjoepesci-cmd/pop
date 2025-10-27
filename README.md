@@ -1,1 +1,1 @@
-Version robuste: pas de top-level await, PapaParse UMD, overlay d'erreur JS, health-check.
+Diagnostic build: React UMD, no modules, no Babel. Loads Google Sheets CSV and shows totals.
