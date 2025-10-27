@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Simulateur communal POP — Complet</title>
+  <title>Simulateur communal POP — Auto budgets (OFGL) + DGF</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -15,6 +15,7 @@
     .dropdown { position: absolute; z-index: 40; width: 100%; background: white; border: 1px solid #e5e7eb; border-radius: 0.75rem; box-shadow: 0 12px 32px rgba(0,0,0,0.08); }
     .dropdown-item { padding: 8px 12px; cursor: pointer; }
     .dropdown-item:hover { background: #f9fafb; }
+    .muted { color: #6b7280; }
   </style>
 </head>
 <body class="bg-gray-50">
@@ -28,6 +29,65 @@
   <script type="text/babel">
     const { useMemo, useState, useEffect, useRef } = React;
 
+    // ---------- Helpers API ----------
+    // OFGL budgets (Opendatasoft) — dernière année disponible
+    async function fetchOfglBudgets(insee) {
+      try {
+        const qs = new URLSearchParams({
+          dataset: "ofgl-base-communes",
+          "refine.codgeo": insee,
+          rows: "1",
+          sort: "-exer"
+        });
+        const url = `https://data.ofgl.fr/api/records/1.0/search/?${qs.toString()}`;
+        const r = await fetch(url);
+        if (!r.ok) throw new Error("Erreur API OFGL");
+        const data = await r.json();
+        const rec = data.records?.[0]?.fields;
+        if (!rec) return null;
+        return {
+          funcRec: Number(rec.f_rec) || 0,
+          funcDep: Number(rec.f_dep) || 0,
+          invRec:  Number(rec.i_rec) || 0,
+          invDep:  Number(rec.i_dep) || 0,
+          year: rec.exer
+        };
+      } catch (e) {
+        console.warn("Erreur OFGL", e);
+        return null;
+      }
+    }
+
+    // DGF communes (Opendatasoft Finances Gouv) — best-effort; fallback null si dataset/champs diffèrent
+    async function fetchDGF(insee) {
+      try {
+        // NOTE: l'identifiant exact du dataset peut varier selon les millésimes.
+        // On tente un dataset usuel côté opendata.finances.gouv.fr, sinon on renvoie null.
+        const qs = new URLSearchParams({
+          dataset: "dgf-communes",
+          "refine.codgeo": insee,
+          rows: "1",
+          sort: "-annee"
+        });
+        const url = `https://opendata.finances.gouv.fr/api/records/1.0/search/?${qs.toString()}`;
+        const r = await fetch(url);
+        if (!r.ok) throw new Error("Erreur API DGF");
+        const data = await r.json();
+        const rec = data.records?.[0]?.fields;
+        if (!rec) return null;
+        // Champs habituels (à ajuster si nécessaire selon le schéma) :
+        // dgf_totale, dotation_forfaitaire, annee...
+        const value = Number(rec.dgf_totale ?? rec.dotation_forfaitaire ?? 0);
+        const year  = rec.annee ?? rec.exer ?? null;
+        if (!value) return null;
+        return { value, year };
+      } catch (e) {
+        console.warn("Erreur DGF", e);
+        return null;
+      }
+    }
+
+    // ---------- Règles sièges/scrutin ----------
     const seatRules = [
       { min: 0, max: 99, seats: 7 },{ min: 100, max: 499, seats: 11 },
       { min: 500, max: 1499, seats: 15 },{ min: 1500, max: 2499, seats: 19 },
@@ -46,9 +106,10 @@
     }
     function modeScrutin(pop) {
       if (pop == null || isNaN(pop)) return "—";
-      return pop >= 1000 ? "Scrutin de liste paritaire (>= 1000 hab)" : "Scrutin majoritaire plurinominal (panachage)";
+      return pop >= 1000 ? "Scrutin de liste paritaire (≥ 1000 hab)" : "Scrutin majoritaire plurinominal (panachage)";
     }
 
+    // ---------- Mesures ----------
     const MEASURES = [
       { id: "proprete_tri", label: "Propreté — Bacs + tri collectif", unitLabel: "bacs", defaultUnits: 60, defaultUnitCost: 320, capexShare: 0.5, type: "expense" },
       { id: "voirie_velo", label: "Mobilité — Marquage pistes cyclables", unitLabel: "km", defaultUnits: 5, defaultUnitCost: 40000, capexShare: 0.8, type: "expense" },
@@ -60,6 +121,7 @@
       { id: "taxe_residences_secondaires", label: "Recette — Surtaxe résidences secondaires", unitLabel: "k€ estimés/an", defaultUnits: 50, defaultUnitCost: 1000, capexShare: 0.0, type: "revenue" },
     ];
 
+    // ---------- Utils ----------
     function euro(n) { return (n ?? 0).toLocaleString("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 0 }); }
     function useDebouncedValue(value, delay=300) { const [v, setV] = React.useState(value); React.useEffect(()=>{const t=setTimeout(()=>setV(value),delay);return()=>clearTimeout(t);},[value,delay]); return v; }
 
@@ -75,10 +137,11 @@
         <input className="w-full border rounded-xl px-3 py-2" placeholder="ex. Saint-André-les-Alpes" value={query} onChange={(e)=>setQuery(e.target.value)} onFocus={()=>setOpen(true)} />
         {open && list.length>0 && (<div className="dropdown mt-1">{list.map(c=>(<div key={c.code} className="dropdown-item"
           onClick={()=>{setQuery(c.nom);setOpen(false);onSelect&&onSelect(c);onPopulation&&onPopulation(c.population||null);}}>
-            <div className="font-medium">{c.nom}</div><div className="text-xs text-gray-500">INSEE {c.code} • Pop. {c.population?.toLocaleString("fr-FR")||"?"}</div></div>))}</div>)}
+            <div className="font-medium">{c.nom}</div><div className="text-xs muted">INSEE {c.code} • Pop. {c.population?.toLocaleString("fr-FR")||"?"}</div></div>))}</div>)}
       </div>);
     }
 
+    // ---------- App ----------
     function App() {
       const [commune, setCommune] = useState({ nom: "", insee: "", population: null });
       const [population, setPopulation] = useState(null);
@@ -87,6 +150,8 @@
       const [baseBudgetInvDep, setBaseBudgetInvDep] = useState(1000000);
       const [baseBudgetInvRec, setBaseBudgetInvRec] = useState(900000);
       const [dgf, setDgf] = useState(300000);
+      const [autoYear, setAutoYear] = useState(null);
+      const [autoDgfYear, setAutoDgfYear] = useState(null);
       const [basket, setBasket] = useState(MEASURES.map(m=>({id:m.id,units:m.defaultUnits,unitCost:m.defaultUnitCost})));
 
       const popRef = useMemo(()=> (population ?? commune.population ?? null), [population, commune]);
@@ -94,7 +159,9 @@
       const scrutin = useMemo(()=> modeScrutin(popRef), [popRef]);
 
       const totals = useMemo(()=>{ let capex=0, opex=0, newRecettes=0;
-        for(const item of basket){ const meta = MEASURES.find(m=>m.id===item.id); if(!meta) continue; let cost=(item.units||0)*(item.unitCost||0);
+        for(const item of basket){
+          const meta = MEASURES.find(m=>m.id===item.id); if(!meta) continue;
+          let cost=(item.units||0)*(item.unitCost||0);
           if(meta.id==="carte_culture"){ cost = (item.units||0) * (popRef||0); }
           if(meta.type==="revenue"){ newRecettes += cost; } else { capex += cost*meta.capexShare; opex += cost*(1-meta.capexShare); }
         } return { capex, opex, total: capex+opex, recettes: newRecettes }; }, [basket, popRef]);
@@ -110,6 +177,28 @@
       function downloadPDF(){ const el=document.getElementById("pdf-area"); const opt={margin:8,filename:`Dossier_POP_${(commune.nom||"commune").replace(/\s+/g,"_")}.pdf`,image:{type:"jpeg",quality:0.98},html2canvas:{scale:2,useCORS:true},jsPDF:{unit:"mm",format:"a4",orientation:"portrait"}}; html2pdf().set(opt).from(el).save(); }
       function downloadJson(){ const payload={ commune:{ nom:commune.nom||"", insee:commune.insee||"", population_reference:popRef, mode_scrutin:scrutin, sieges:seats, dgf_estimee:dgf }, budget_base:{ fonctionnement:{ depenses:baseBudgetFuncDep, recettes:baseBudgetFuncRec }, investissement:{ depenses:baseBudgetInvDep, recettes:baseBudgetInvRec }, epargne_brute:epargneBruteAvant }, programme:basket, resultats:{ capex:totals.capex, opex:totals.opex, recettes_nouvelles:totals.recettes, epargne_brute_apres:epargneBruteApres } }; const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"}); const url=URL.createObjectURL(blob); const a=document.createElement("a"); a.href=url; a.download=`simulation_POP_${(commune.nom||"commune").replace(/\s+/g,"_")}.json`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); }
 
+      async function handleSelectCommune(c){
+        setCommune({ nom: c.nom, insee: c.code, population: c.population || null });
+        setPopulation(c.population || null);
+
+        // Budgets OFGL
+        const b = await fetchOfglBudgets(c.code);
+        if (b) {
+          setBaseBudgetFuncRec(b.funcRec);
+          setBaseBudgetFuncDep(b.funcDep);
+          setBaseBudgetInvRec(b.invRec);
+          setBaseBudgetInvDep(b.invDep);
+          setAutoYear(b.year);
+        }
+
+        // DGF (si dispo)
+        const d = await fetchDGF(c.code);
+        if (d && typeof d.value === "number") {
+          setDgf(d.value);
+          setAutoDgfYear(d.year || null);
+        }
+      }
+
       return (<div className="space-y-6">
         <div className="flex items-center justify-between flex-wrap gap-3">
           <h1 className="text-2xl md:text-3xl font-bold">Simulateur communal POP</h1>
@@ -123,7 +212,7 @@
           <section className="card bg-white rounded-2xl p-6">
             <div className="flex items-center justify-between">
               <div>
-                <div className="text-xs uppercase tracking-wide text-gray-500">Dossier candidat — POP</div>
+                <div className="text-xs uppercase muted">Dossier candidat — POP</div>
                 <div className="text-2xl font-bold mt-1">{commune.nom || "Votre commune"}</div>
                 <div className="mt-1 chip inline-block">INSEE {commune.insee || "—"}</div>
               </div>
@@ -132,7 +221,7 @@
                 <div className="chip mt-2">Sièges: {seats ?? "—"}</div>
               </div>
             </div>
-            <div className="mt-4 text-sm text-gray-600">{scrutin}</div>
+            <div className="mt-4 text-sm muted">{scrutin}</div>
           </section>
 
           <section className="card bg-white rounded-2xl p-6">
@@ -140,22 +229,28 @@
             <div className="grid md:grid-cols-4 gap-4 items-start">
               <div className="md:col-span-2 relative">
                 <label className="block text-sm mb-1">Nom de la commune (auto-complétion)</label>
-                <CommuneAutocomplete value={commune.nom} onSelect={(c)=>setCommune({nom:c.nom,insee:c.code,population:c.population||null})} onPopulation={(p)=>setPopulation(p)} />
+                <CommuneAutocomplete value={commune.nom} onSelect={handleSelectCommune} onPopulation={(p)=>setPopulation(p)} />
               </div>
               <div>
                 <label className="block text-sm mb-1">Population (si besoin, éditable)</label>
                 <input type="number" className="w-full border rounded-xl px-3 py-2" placeholder="ex. 3450" value={popRef ?? ""} onChange={(e)=>setPopulation(e.target.value?Number(e.target.value):null)} min={0} />
               </div>
               <div className="bg-gray-100 rounded-xl p-3 text-center">
-                <div className="text-xs uppercase tracking-wide text-gray-500">Sièges estimés</div>
+                <div className="text-xs uppercase muted">Sièges estimés</div>
                 <div className="text-2xl font-bold">{seats ?? "—"}</div>
-                <div className="text-xs text-gray-600">{scrutin}</div>
+                <div className="text-xs muted">{scrutin}</div>
               </div>
             </div>
           </section>
 
           <section className="card bg-white rounded-2xl p-6">
-            <h2 className="text-xl font-semibold mb-4">2) Budget de base</h2>
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-xl font-semibold">2) Budget de base</h2>
+              <div className="text-xs muted">
+                {autoYear ? <>OFGL {autoYear}</> : <>Saisie manuelle</>}
+                {autoDgfYear ? <> • DGF {autoDgfYear}</> : null}
+              </div>
+            </div>
             <div className="grid md:grid-cols-2 gap-4">
               <div className="bg-gray-50 rounded-xl p-3">
                 <div className="font-medium mb-2">Fonctionnement</div>
@@ -173,11 +268,27 @@
               </div>
             </div>
             <div className="mt-4 grid md:grid-cols-5 gap-4 text-center">
-              <div className="bg-gray-100 rounded-xl p-3"><div className="text-xs text-gray-600">Épargne brute AVANT</div><div className={(baseBudgetFuncRec-baseBudgetFuncDep)<0? "text-lg font-semibold text-red-600":"text-lg font-semibold"}>{euro(baseBudgetFuncRec-baseBudgetFuncDep)}</div></div>
-              <div className="bg-gray-100 rounded-xl p-3"><div className="text-xs text-gray-600">CAPEX programme</div><div className="text-lg font-semibold">{euro(totals.capex)}</div></div>
-              <div className="bg-gray-100 rounded-xl p-3"><div className="text-xs text-gray-600">OPEX programme</div><div className="text-lg font-semibold">{euro(totals.opex)}</div></div>
-              <div className="bg-gray-100 rounded-xl p-3"><div className="text-xs text-gray-600">Nouvelles recettes</div><div className="text-lg font-semibold">{euro(totals.recettes)}</div></div>
-              <div className="bg-gray-100 rounded-xl p-3"><div className="text-xs text-gray-600">Épargne APRÈS</div><div className={(afterFuncRec-afterFuncDep)<0? "text-lg font-semibold text-red-600":"text-lg font-semibold"}>{euro(afterFuncRec-afterFuncDep)}</div></div>
+              <div className="bg-gray-100 rounded-xl p-3"><div className="text-xs muted">Épargne brute AVANT</div><div className={(baseBudgetFuncRec-baseBudgetFuncDep)<0? "text-lg font-semibold text-red-600":"text-lg font-semibold"}>{(baseBudgetFuncRec-baseBudgetFuncDep).toLocaleString("fr-FR",{style:"currency",currency:"EUR",maximumFractionDigits:0})}</div></div>
+              <div className="bg-gray-100 rounded-xl p-3"><div className="text-xs muted">CAPEX programme</div><div className="text-lg font-semibold">{euro(totals.capex)}</div></div>
+              <div className="bg-gray-100 rounded-xl p-3"><div className="text-xs muted">OPEX programme</div><div className="text-lg font-semibold">{euro(totals.opex)}</div></div>
+              <div className="bg-gray-100 rounded-xl p-3"><div className="text-xs muted">Nouvelles recettes</div><div className="text-lg font-semibold">{euro(totals.recettes)}</div></div>
+              <div className="bg-gray-100 rounded-xl p-3"><div className="text-xs muted">Épargne APRÈS</div><div className={( (baseBudgetFuncRec+totals.recettes) - (baseBudgetFuncDep+totals.opex) )<0? "text-lg font-semibold text-red-600":"text-lg font-semibold"}>{euro( (baseBudgetFuncRec+totals.recettes) - (baseBudgetFuncDep+totals.opex) )}</div></div>
+            </div>
+
+            <div className="mt-3 grid md:grid-cols-3 gap-3">
+              <div className="bg-white border rounded-xl p-3">
+                <div className="text-xs muted mb-1">DGF estimée</div>
+                <input type="number" className="w-full border rounded-xl px-3 py-2" value={dgf} onChange={(e)=>setDgf(Number(e.target.value))} />
+                <div className="text-[11px] muted mt-1">Préremplie si disponible (opendata.finances.gouv.fr).</div>
+              </div>
+              <div className="bg-white border rounded-xl p-3">
+                <div className="text-xs muted mb-1">Investissement — Recettes totales (incl. DGF)</div>
+                <div className="font-semibold">{euro(baseBudgetInvRec + dgf)}</div>
+              </div>
+              <div className="bg-white border rounded-xl p-3">
+                <div className="text-xs muted mb-1">Investissement — Dépenses totales</div>
+                <div className="font-semibold">{euro(baseBudgetInvDep + totals.capex)}</div>
+              </div>
             </div>
           </section>
 
@@ -188,11 +299,11 @@
                 <div key={m.id} className="border rounded-2xl p-4">
                   <div className="flex items-center justify-between mb-2"><div className="font-medium">{m.label}</div><span className="chip">{m.type==="revenue"?"Recette":"Dépense"}</span></div>
                   <div className="grid grid-cols-2 gap-3">
-                    <div><label className="block text-sm mb-1">{m.unitLabel}</label><input type="number" className="w-full border rounded-xl px-3 py-2" value={sel.units} onChange={(e)=>updateBasket(m.id,"units",Number(e.target.value))} /></div>
-                    <div><label className="block text-sm mb-1">Coût unitaire (€)</label><input type="number" className="w-full border rounded-xl px-3 py-2" value={sel.unitCost} onChange={(e)=>updateBasket(m.id,"unitCost",Number(e.target.value))} /></div>
+                    <div><label className="block text-sm mb-1">{m.unitLabel}</label><input type="number" className="w-full border rounded-xl px-3 py-2" value={sel.units} onChange={(e)=>setBasket(prev=>prev.map(b=>b.id===m.id?{...b,units:Number(e.target.value)}:b))} /></div>
+                    <div><label className="block text-sm mb-1">Coût unitaire (€)</label><input type="number" className="w-full border rounded-xl px-3 py-2" value={sel.unitCost} onChange={(e)=>setBasket(prev=>prev.map(b=>b.id===m.id?{...b,unitCost:Number(e.target.value)}:b))} /></div>
                   </div>
-                  {m.id==="carte_culture" && <div className="mt-2 text-xs text-gray-500">Le coût = (€/hab/an) × population de la commune.</div>}
-                  {m.type==="expense" && <div className="mt-2 text-sm text-gray-600">CAPEX {Math.round(m.capexShare*100)}% / OPEX {Math.round((1-m.capexShare)*100)}%</div>}
+                  {m.id==="carte_culture" && <div className="mt-2 text-xs muted">Coût = (€/hab/an) × population.</div>}
+                  {m.type==="expense" && <div className="mt-2 text-xs muted">CAPEX {Math.round(m.capexShare*100)}% / OPEX {Math.round((1-m.capexShare)*100)}%</div>}
                 </div>
               );})}
             </div>
@@ -200,17 +311,18 @@
 
           <section className="card bg-white rounded-2xl p-6">
             <h2 className="text-xl font-semibold mb-2">Règles du jeu (rappel)</h2>
-            <ul className="list-disc pl-6 text-sm text-gray-700 space-y-1">
+            <ul className="list-disc pl-6 text-sm muted space-y-1">
               <li><strong>&lt; 1 000 hab</strong> : scrutin majoritaire plurinominal (panachage).</li>
-              <li><strong>≥ 1 000 hab</strong> : scrutin de liste à deux tours, listes paritaires (alternance H/F), prime majoritaire.</li>
-              <li>Nombre de conseillers municipaux : tranches de population (voir cartouche).</li>
-              <li>Prototype — vérifier les textes officiels 2026.</li>
+              <li><strong>≥ 1 000 hab</strong> : scrutin de liste à deux tours, listes paritaires, prime majoritaire.</li>
+              <li>Nombre de conseillers municipaux : tranches de population.</li>
+              <li>Prototype — vérifiez les textes officiels 2026.</li>
             </ul>
           </section>
 
-          <section className="text-center text-xs text-gray-500">© POP — Prototype statique complet. Valeurs indicatives.</section>
+          <section className="text-center text-xs muted">© POP — Prototype statique. Valeurs indicatives. Sources: OFGL, opendata.finances.gouv.fr</section>
         </div>
-      </div>);}
+      </div>);
+    }
 
     ReactDOM.createRoot(document.getElementById("root")).render(<App />);
   </script>

@@ -1,1 +1,1 @@
-Déploiement: repo GitHub avec ce `index.html`, Vercel (Other) ou Netlify drag&drop.
+Remplacez votre index.html par celui-ci (Vercel 'Other' ou Netlify). Budgets OFGL et DGF préremplis si disponibles via API publiques.
