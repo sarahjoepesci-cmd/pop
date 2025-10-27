@@ -1,0 +1,1 @@
+Déploiement: crée un repo GitHub avec ce index.html et importe-le sur Vercel (Other) ou glisse le dossier sur Netlify.
