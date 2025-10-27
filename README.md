@@ -1,1 +1,1 @@
-Simulateur simple : population -> €/hab -> budget indicatif, impondérables (planchers), enveloppe libre et répartition par mesures. 100% statique.
+Version no-build (Preact + HTM). Aucune dépendance à Babel. Prête pour Vercel/Squarespace.
