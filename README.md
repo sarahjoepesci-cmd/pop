@@ -1,1 +1,1 @@
-Diagnostic build: React UMD, no modules, no Babel. Loads Google Sheets CSV and shows totals.
+UMD React app: commune autocomplete, CSV measures with selection & quantities, tax and loan levers, live totals, expandable notes.

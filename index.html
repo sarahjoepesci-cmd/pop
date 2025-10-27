@@ -3,17 +3,23 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>POP — Simulateur (UMD sans modules)</title>
+  <title>POP — Simulateur UMD (sélection + recettes + commune)</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
     .card { box-shadow: 0 8px 24px rgba(0,0,0,.08); }
-    #err { white-space: pre-wrap; color:#fff; background:#111827; padding:12px; border-radius:12px; display:none; }
+    .muted { color:#6b7280; }
+    .chip { border-radius:9999px; padding:2px 10px; background:#f3f4f6; font-size:12px; }
+    .input { width:100%; border:1px solid #e5e7eb; border-radius:12px; padding:.5rem .75rem; }
+    .btn { border-radius:12px; padding:.5rem .8rem; }
+    .dropdown { position:absolute; z-index:40; width:100%; background:white; border:1px solid #e5e7eb; border-radius:12px; box-shadow:0 12px 32px rgba(0,0,0,.08); }
+    .dropdown-item { padding:8px 12px; cursor:pointer; }
+    .dropdown-item:hover { background:#f9fafb; }
+    #err { white-space:pre-wrap; color:#fff; background:#111827; padding:12px; border-radius:12px; display:none; }
   </style>
 </head>
 <body class="bg-gray-50">
-  <div class="max-w-5xl mx-auto p-4">
-    <div id="health" class="text-xs text-gray-500">Health: page HTML chargée.</div>
+  <div class="max-w-6xl mx-auto p-4">
     <div id="err"></div>
     <div id="root"></div>
   </div>
@@ -24,19 +30,17 @@
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 
   <script>
-    // Hard error catcher
+    // Error catcher
     window.onerror = function(msg, src, line, col, err){
-      const el = document.getElementById('err');
-      el.style.display = 'block';
-      el.textContent = 'Erreur: ' + msg + '\\n' + (src||'') + ':' + (line||'') + ':' + (col||'') + '\\n' + (err && err.stack ? err.stack : '');
+      const el = document.getElementById('err'); el.style.display='block';
+      el.textContent = 'Erreur: '+msg+'\n'+(src||'')+':'+(line||'')+':'+(col||'')+'\n'+(err&&err.stack?err.stack:'');
     };
     window.onunhandledrejection = function(e){
-      const el = document.getElementById('err');
-      el.style.display = 'block';
+      const el = document.getElementById('err'); el.style.display='block';
       el.textContent = 'Unhandled rejection: ' + (e.reason && e.reason.stack ? e.reason.stack : e.reason);
     };
 
-    // Helpers
+    // Utilities
     function euro(n){ return (n||0).toLocaleString('fr-FR', {style:'currency', currency:'EUR', maximumFractionDigits:0}); }
     function clamp(n,a,b){ return Math.max(a, Math.min(b,n)); }
     function seatsFromPopulation(pop){
@@ -75,54 +79,82 @@
       }
       return val;
     }
+    function annuity(montant, taux, duree){
+      const P = +montant||0, r = (+taux||0)/100, n = Math.max(1, +duree||1);
+      if(r<=0) return P/n;
+      return P * (r / (1 - Math.pow(1+r, -n)));
+    }
 
     (function(){
-      document.getElementById('health').textContent = 'Health: scripts UMD ok, React='+!!window.React+', Papa='+!!window.Papa;
-
       const e = React.createElement;
-      const { useState, useMemo, useEffect } = React;
+      const { useState, useMemo, useEffect, useRef } = React;
+
+      function CommuneAutocomplete(props){
+        const ref = useRef(null);
+        const [q, setQ] = useState('');
+        const [open, setOpen] = useState(false);
+        const [list, setList] = useState([]);
+        useEffect(()=>{
+          if(!q || q.length<2){ setList([]); return; }
+          const c = new AbortController();
+          fetch('https://geo.api.gouv.fr/communes?nom='+encodeURIComponent(q)+'&fields=nom,code,population&boost=population&limit=10', { signal:c.signal })
+            .then(r=>r.json()).then(d=>{ setList(Array.isArray(d)?d:[]); setOpen(true); }).catch(()=>{});
+          return ()=>c.abort();
+        }, [q]);
+        useEffect(()=>{
+          function onClick(e){ if(ref.current && !ref.current.contains(e.target)) setOpen(false); }
+          document.addEventListener('click', onClick);
+          return ()=>document.removeEventListener('click', onClick);
+        }, []);
+        return e('div', { className:'relative', ref },
+          e('input', { className:'input', placeholder:'ex. Apt', value:q, onChange:(ev)=>setQ(ev.target.value), onFocus:()=>setOpen(true) }),
+          open && list.length>0 ? e('div', { className:'dropdown mt-1' },
+            list.map(c => e('div', { key:c.code, className:'dropdown-item', onClick:()=>{
+              setQ(c.nom); setOpen(false);
+              props.onSelect && props.onSelect({ nom:c.nom, insee:c.code, population:c.population||null });
+            }}, 
+              e('div', { className:'font-medium' }, c.nom),
+              e('div', { className:'text-xs muted' }, 'INSEE ', c.code, ' • Pop. ', (c.population||'—').toLocaleString('fr-FR'))
+            ))
+          ) : null
+        );
+      }
 
       function App(){
-        const [population, setPopulation] = useState(5000);
+        const [commune, setCommune] = useState({ nom:'', insee:'', population:null });
+        const [population, setPopulation] = useState(null);
         const [eurHab, setEurHab] = useState(1474);
         const [floors, setFloors] = useState([
-          { id:'personnel', label:'Personnel', pct:35 },
-          { id:'voirie', label:'Voirie', pct:8 },
-          { id:'ecoles', label:'Écoles', pct:7 },
+          { id:'personnel', label:'Personnel (masse salariale)', pct:35 },
+          { id:'voirie', label:'Voirie (entretien min.)', pct:8 },
+          { id:'ecoles', label:'Écoles maternelles & élémentaires', pct:7 },
           { id:'services', label:'Services obligatoires', pct:5 },
           { id:'energie', label:'Énergie & bâtiments', pct:6 },
-          { id:'dette', label:'Dette (annuité)', pct:6 },
+          { id:'dette', label:'Annuité de dette', pct:6 },
         ]);
+
+        // CSV measures (auto-load from user's URL)
         const [csvUrl, setCsvUrl] = useState("https://docs.google.com/spreadsheets/d/e/2PACX-1vTJiCwyahttqXaLyaIjNFZo8y4o96DDuRpS4rfHsw6x74gjm7iZtn2xRGn2P7tuHtjjj3633n7dTgzv/pub?output=csv");
         const [rows, setRows] = useState([]);
-        const [errCsv, setErrCsv] = useState(null);
         const [loading, setLoading] = useState(false);
+        const [errCsv, setErrCsv] = useState(null);
 
-        const seats = useMemo(()=> seatsFromPopulation(+population||0), [population]);
-        const totalIndicatif = useMemo(()=> (+population||0) * (+eurHab||0), [population, eurHab]);
-        const sommePcts = useMemo(()=> floors.reduce((s,f)=> s+(+f.pct||0), 0), [floors]);
-        const sommeFloors = useMemo(()=> floors.reduce((s,f)=> s + totalIndicatif * clamp((+f.pct||0)/100,0,1),0), [floors, totalIndicatif]);
-        const enveloppeLibre = useMemo(()=> Math.max(0, totalIndicatif - sommeFloors), [totalIndicatif, sommeFloors]);
+        // Selection & quantities per measure
+        const [selected, setSelected] = useState({}); // id -> true/false
+        const [quantities, setQuantities] = useState({}); // id -> number (for unit-based)
 
-        const computed = useMemo(()=> rows.map(r=>{
-          const R = Object.assign({}, r);
-          R.units = needUnits(R.scaling) ? (+R.step_unit||1) : 0;
-          R.montant = computeAmount(R, +population||0);
-          R.isRevenue = isRevenue(R);
-          return R;
-        }), [rows, population]);
-        const totalDep = useMemo(()=> computed.reduce((s,m)=> s + (m.montant>0? m.montant:0),0), [computed]);
-        const totalRec = useMemo(()=> computed.reduce((s,m)=> s + (m.montant<0? -m.montant:0),0), [computed]);
-        const totalNet = useMemo(()=> totalDep - totalRec, [totalDep, totalRec]);
-        const reliquat = useMemo(()=> Math.max(0, enveloppeLibre - totalNet), [enveloppeLibre, totalNet]);
+        // Extra revenue levers
+        const [taxPerHab, setTaxPerHab] = useState(0); // € / hab / an
+        const [loanAmount, setLoanAmount] = useState(0);
+        const [loanRate, setLoanRate] = useState(3.0);
+        const [loanYears, setLoanYears] = useState(15);
 
-        function loadCsv(){
+        useEffect(()=>{
           setLoading(true); setErrCsv(null);
           fetch(csvUrl, { cache:'no-store' })
             .then(r => { if(!r.ok) throw new Error('HTTP '+r.status); return r.text(); })
             .then(text => {
               const p = window.Papa.parse(text, { header:true, skipEmptyLines:true });
-              if(p.errors && p.errors.length) console.warn('Papa errors', p.errors);
               const data = (p.data||[]).map((r,idx)=> ({
                 id: (r.id || ('m_'+idx)).toString().trim(),
                 label: (r.label || ('Mesure '+(idx+1))).toString().trim(),
@@ -135,109 +167,211 @@
                 step_unit: +(r.step_unit || 1)
               }));
               setRows(data);
+              // Default: none selected
+              const initSel = {}; const initQ = {};
+              data.forEach(d => { initSel[d.id] = false; if(needUnits(d.scaling)) initQ[d.id] = d.step_unit||1; });
+              setSelected(initSel); setQuantities(initQ);
             })
             .catch(err => setErrCsv(err.message||String(err)))
             .finally(()=> setLoading(false));
-        }
+        }, [csvUrl]);
 
-        useEffect(loadCsv, []);
+        const popRef = useMemo(()=> population ?? commune.population ?? 0, [population, commune]);
+        const seats = useMemo(()=> seatsFromPopulation(+popRef||0), [popRef]);
 
-        function setFloorPct(id, pct){
-          setFloors(prev => prev.map(f => f.id===id ? Object.assign({}, f, { pct: +pct }) : f));
-        }
+        const totalIndicatif = useMemo(()=> (+popRef||0) * (+eurHab||0), [popRef, eurHab]);
+        const sommePcts = useMemo(()=> floors.reduce((s,f)=> s+(+f.pct||0), 0), [floors]);
+        const sommeFloors = useMemo(()=> floors.reduce((s,f)=> s + totalIndicatif * clamp((+f.pct||0)/100,0,1),0), [floors, totalIndicatif]);
+        const enveloppeLibre = useMemo(()=> Math.max(0, totalIndicatif - sommeFloors), [totalIndicatif, sommeFloors]);
 
-        return e('div', { className:'space-y-4' },
-          e('div', { className:'card bg-white rounded-2xl p-4' },
-            e('div', { className:'text-lg font-semibold mb-2' }, '1) Paramètres de base (UMD diag)'),
-            e('div', { className:'grid md:grid-cols-4 gap-3' },
-              e('div', null,
-                e('div', { className:'text-sm mb-1' }, 'Population'),
-                e('input', { className:'input w-full border rounded-lg p-2', type:'number', value: population, onChange: (ev)=> setPopulation(ev.target.value) })
-              ),
-              e('div', null,
-                e('div', { className:'text-sm mb-1' }, 'Hypothèse €/hab'),
-                e('input', { className:'input w-full border rounded-lg p-2', type:'number', value: eurHab, onChange: (ev)=> setEurHab(ev.target.value) })
-              ),
-              e('div', { className:'bg-gray-50 rounded-xl p-3 text-center' },
-                e('div', { className:'text-xs text-gray-500' }, 'Budget indicatif'),
-                e('div', { className:'text-xl font-bold' }, euro(totalIndicatif))
-              ),
-              e('div', { className:'bg-gray-50 rounded-xl p-3 text-center' },
-                e('div', { className:'text-xs text-gray-500' }, 'Sièges (est.)'),
-                e('div', { className:'text-xl font-bold' }, seats==null?'—':String(seats))
-              ),
-            ),
-            e('div', { className:'text-xs text-gray-500 mt-1' }, "NB: moyenne nationale 1 474 €/hab (INSEE 2023).")
+        function toggleSelect(id){ setSelected(prev => Object.assign({}, prev, { [id]: !prev[id] })); }
+        function setQty(id, v){ const x = Math.max(0, +v||0); setQuantities(prev => Object.assign({}, prev, { [id]: x })); }
+
+        const computed = useMemo(()=> rows.map(r=>{
+          const isSel = !!selected[r.id];
+          const needs = needUnits(r.scaling);
+          const withUnits = Object.assign({}, r, { units: needs ? (quantities[r.id] || r.step_unit || 1) : 0 });
+          const montant = computeAmount(withUnits, +popRef||0);
+          const isRec = isRevenue(withUnits);
+          return Object.assign({}, withUnits, { selected:isSel, montant, isRevenue:isRec });
+        }), [rows, selected, quantities, popRef]);
+
+        const totalDepenses = useMemo(()=> computed.reduce((s,m)=> s + (m.selected && m.montant>0 ? m.montant : 0), 0), [computed]);
+        const totalRecettesMesures = useMemo(()=> computed.reduce((s,m)=> s + (m.selected && m.montant<0 ? -m.montant : 0), 0), [computed]);
+
+        // Extra levers
+        const recettesTaxe = useMemo(()=> (+taxPerHab||0) * (+popRef||0), [taxPerHab, popRef]);
+        const chargeAnnuellePret = useMemo(()=> annuity(loanAmount, loanRate, loanYears), [loanAmount, loanRate, loanYears]);
+
+        const totalRecettes = useMemo(()=> totalRecettesMesures + recettesTaxe, [totalRecettesMesures, recettesTaxe]);
+        const totalDepensesPlusPret = useMemo(()=> totalDepenses + chargeAnnuellePret, [totalDepenses, chargeAnnuellePret]);
+        const totalNet = useMemo(()=> totalDepensesPlusPret - totalRecettes, [totalDepensesPlusPret, totalRecettes]);
+        const reliquat = useMemo(()=> Math.max(0, enveloppeLibre - totalNet), [enveloppeLibre, totalNet]);
+
+        function setFloorPct(id, pct){ setFloors(prev => prev.map(f => f.id===id ? Object.assign({}, f, { pct: +pct }) : f)); }
+
+        return e('div', { className:'space-y-6' },
+          e('div', { className:'flex items-center justify-between flex-wrap gap-3' },
+            e('h1', { className:'text-2xl md:text-3xl font-bold' }, 'Budget communal — sélection de mesures'),
+            e('div', { className:'flex gap-2' },
+              e('a', { href: csvUrl, target:'_blank', className:'btn bg-gray-200' }, 'Ouvrir CSV'),
+              e('button', { className:'btn bg-gray-200', onClick: ()=> location.reload() }, 'Recharger')
+            )
           ),
 
-          e('div', { className:'card bg-white rounded-2xl p-4' },
-            e('div', { className:'text-lg font-semibold mb-2' }, '2) Impondérables'),
-            e('div', { className:'grid md:grid-cols-3 gap-3' },
+          e('section', { className:'card bg-white rounded-2xl p-6' },
+            e('h2', { className:'text-xl font-semibold mb-4' }, '1) Commune'),
+            e('div', { className:'grid md:grid-cols-4 gap-4 items-start' },
+              e('div', { className:'md:col-span-2' },
+                e('label', { className:'block text-sm mb-1' }, 'Nom de la commune'),
+                e(CommuneAutocomplete, { onSelect: (c)=>{ setCommune(c); setPopulation(c.population||null); } })
+              ),
+              e('div', null,
+                e('label', { className:'block text-sm mb-1' }, 'Population (éditable)'),
+                e('input', { type:'number', className:'input', value: popRef||'', onChange:(ev)=> setPopulation(ev.target.value? +ev.target.value : null), min:0 })
+              ),
+              e('div', { className:'bg-gray-100 rounded-xl p-3 text-center' },
+                e('div', { className:'text-xs uppercase muted' }, 'Sièges estimés'),
+                e('div', { className:'text-2xl font-bold' }, seats==null?'—':String(seats)),
+                e('div', { className:'text-xs muted' }, 'estimation par tranches (CGCT)')
+              )
+            ),
+            e('div', { className:'mt-2 text-xs muted' }, 'Hypothèse nationale : ', e('strong', null, '1 474 €/hab'), ' (INSEE 2023). Modifiable ci-dessous.')
+          ),
+
+          e('section', { className:'card bg-white rounded-2xl p-6' },
+            e('h2', { className:'text-xl font-semibold mb-4' }, '2) Hypothèses & impondérables'),
+            e('div', { className:'grid md:grid-cols-3 gap-4' },
+              e('div', null,
+                e('label', { className:'block text-sm mb-1' }, 'Benchmark national (€/hab)'),
+                e('input', { type:'number', className:'input', value: eurHab, onChange:(ev)=> setEurHab(+ev.target.value||0), min:0, step:10 }),
+                e('p', { className:'text-xs muted mt-1' }, 'Adaptez selon le profil local.')
+              ),
+              e('div', { className:'bg-gray-50 rounded-xl p-3 text-center' },
+                e('div', { className:'text-xs muted mb-1' }, 'Budget indicatif total'),
+                e('div', { className:'text-2xl font-bold' }, euro(totalIndicatif)),
+                e('div', { className:'text-xs muted' }, '= population × €/hab')
+              ),
+              e('div', { className:'bg-gray-50 rounded-xl p-3 text-center' },
+                e('div', { className:'text-xs muted mb-1' }, '% impondérables (somme)'),
+                e('div', { className:'text-2xl font-bold ' + (sommePcts>95? 'text-red-600':'') }, String(Math.round(sommePcts)), '%'),
+                e('div', { className:'text-xs muted' }, 'évitez de dépasser ~80–90%')
+              )
+            ),
+            e('div', { className:'mt-4 grid md:grid-cols-3 gap-3' },
               floors.map(f => e('div', { key:f.id, className:'bg-gray-50 rounded-xl p-3' },
                 e('div', { className:'flex items-center justify-between' },
                   e('div', { className:'font-medium' }, f.label),
                   e('div', null, f.pct, '%')
                 ),
                 e('input', { type:'range', min:0, max:100, value:f.pct, onChange:(ev)=> setFloorPct(f.id, ev.target.value), className:'w-full my-2' }),
-                e('div', { className:'text-sm text-gray-600' }, 'Plancher : ', e('strong', null, euro(totalIndicatif * (f.pct/100))))
+                e('div', { className:'text-sm muted' }, 'Montant plancher : ', e('strong', null, euro(totalIndicatif * (f.pct/100))))
               ))
             ),
-            e('div', { className:'grid md:grid-cols-3 gap-3 text-center mt-3' },
-              e('div', { className:'bg-gray-100 rounded-xl p-3' },
-                e('div', { className:'text-xs text-gray-500' }, '% impondérables'),
-                e('div', { className:'text-lg font-semibold' }, String(Math.round(sommePcts)), '%')
-              ),
-              e('div', { className:'bg-gray-100 rounded-xl p-3' },
-                e('div', { className:'text-xs text-gray-500' }, 'Somme impondérables'),
-                e('div', { className:'text-lg font-semibold' }, euro(sommeFloors))
-              ),
-              e('div', { className:'bg-gray-100 rounded-xl p-3' },
-                e('div', { className:'text-xs text-gray-500' }, 'Enveloppe libre'),
-                e('div', { className:'text-lg font-semibold' }, euro(enveloppeLibre))
-              ),
+            e('div', { className:'mt-4 grid md:grid-cols-4 gap-4 text-center' },
+              e('div', { className:'bg-gray-100 rounded-xl p-3' }, e('div', {className:'text-xs muted'}, 'Somme impondérables'), e('div', {className:'text-lg font-semibold'}, euro(sommeFloors))),
+              e('div', { className:'bg-gray-100 rounded-xl p-3' }, e('div', {className:'text-xs muted'}, 'Enveloppe libre'), e('div', {className:'text-lg font-semibold'}, euro(enveloppeLibre))),
+              e('div', { className:'bg-gray-100 rounded-xl p-3' }, e('div', {className:'text-xs muted'}, 'Dépenses (programme + annuité prêt)'), e('div', {className:'text-lg font-semibold'}, euro(totalDepenses + chargeAnnuellePret))),
+              e('div', { className:'bg-gray-100 rounded-xl p-3' }, e('div', {className:'text-xs muted'}, 'Recettes (programme + taxe)'), e('div', {className:'text-lg font-semibold text-green-700'}, '+ ', euro(totalRecettes)))
             )
           ),
 
-          e('div', { className:'card bg-white rounded-2xl p-4' },
-            e('div', { className:'flex items-center justify-between' },
-              e('div', { className:'text-lg font-semibold' }, '3) Programme — import automatique (Google Sheets CSV)'),
-              e('div', { className:'flex gap-2' },
-                e('input', { className:'input border rounded-lg p-2 w-80', value: csvUrl, onChange:(ev)=> setCsvUrl(ev.target.value) }),
-                e('button', { className:'btn bg-gray-200', onClick: loadCsv }, 'Recharger')
+          e('section', { className:'card bg-white rounded-2xl p-6' },
+            e('div', { className:'flex items-center justify-between mb-2' },
+              e('h2', { className:'text-xl font-semibold' }, '3) Programme — sélection depuis CSV'),
+              e('div', { className:'flex items-center gap-2' },
+                e('input', { className:'input md:w-96', value: csvUrl, onChange:(ev)=> setCsvUrl(ev.target.value) }),
+                e('button', { className:'btn bg-gray-200', onClick: ()=>{
+                  // trigger reload of CSV by changing state (effect depends on csvUrl)
+                  setCsvUrl(csvUrl);
+                } }, 'Recharger')
               )
             ),
-            loading ? e('div', { className:'text-sm text-gray-500 mt-2' }, 'Chargement CSV…') : null,
-            errCsv ? e('div', { className:'text-sm text-red-600 mt-2' }, 'Erreur CSV: ', errCsv) : null,
-            rows.length===0 && !loading && !errCsv ? e('div', { className:'text-sm text-gray-500 mt-2' }, 'Aucune mesure chargée.') : null,
-            rows.length>0 ? e('div', { className:'mt-3 text-sm text-gray-700' }, rows.length, ' mesures chargées.') : null,
-            rows.length>0 ? e('div', { className:'mt-2 grid gap-2' },
-              computed.slice(0,10).map(m => e('div', { key:m.id, className:'border rounded-xl p-2 flex items-center justify-between' },
-                e('div', null, m.label, ' ', e('span', { className:'text-xs text-gray-500' }, m.category||'')),
-                e('div', null, m.isRevenue ? e('span', { className:'text-green-700 font-semibold' }, '+ ', euro(Math.abs(m.montant))) : e('span', { className:'font-semibold' }, euro(m.montant)))
-              ))
-            ) : null,
-            rows.length>0 ? e('div', { className:'grid md:grid-cols-3 gap-3 text-center mt-3' },
-              e('div', { className:'bg-gray-100 rounded-xl p-3' },
-                e('div', { className:'text-xs text-gray-500' }, 'Total dépenses'),
-                e('div', { className:'text-lg font-semibold' }, euro(totalDep))
-              ),
-              e('div', { className:'bg-gray-100 rounded-xl p-3' },
-                e('div', { className:'text-xs text-gray-500' }, 'Total recettes'),
-                e('div', { className:'text-lg font-semibold text-green-700' }, '+ ', euro(totalRec))
-              ),
-              e('div', { className:'bg-gray-100 rounded-xl p-3' },
-                e('div', { className:'text-xs text-gray-500' }, 'Net programme'),
-                e('div', { className:'text-lg font-semibold' }, euro(totalNet))
-              ),
-            ) : null
+            loading ? e('div', { className:'text-sm text-gray-500' }, 'Chargement du CSV…') : null,
+            errCsv ? e('div', { className:'text-sm text-red-600' }, 'Erreur CSV : ', errCsv) : null,
+
+            rows.length>0 ? e('div', { className:'grid md:grid-cols-2 gap-3 mt-2' },
+              rows.map(m => {
+                const checked = !!selected[m.id];
+                const needs = needUnits(m.scaling);
+                const qty = quantities[m.id] ?? (needs? (m.step_unit||1): 0);
+                const mWithUnits = Object.assign({}, m, { units: needs? qty : 0 });
+                const amt = computeAmount(mWithUnits, +popRef||0);
+                const isRec = isRevenue(mWithUnits);
+                return e('div', { key:m.id, className:'border rounded-2xl p-3 bg-white' },
+                  e('div', { className:'flex items-center justify-between gap-2' },
+                    e('label', { className:'flex items-center gap-2 cursor-pointer' },
+                      e('input', { type:'checkbox', checked, onChange: ()=> toggleSelect(m.id) }),
+                      e('span', { className:'font-medium' }, m.label)
+                    ),
+                    e('span', { className:'chip' }, m.category || 'Mesure')
+                  ),
+                  e('div', { className:'grid grid-cols-3 gap-3 mt-2 items-end' },
+                    e('div', null,
+                      e('div', { className:'text-xs muted' }, 'Méthode'),
+                      e('div', { className:'text-sm' }, m.scaling, m.unit? (' • '+m.unit) : '')
+                    ),
+                    needs ? e('div', null,
+                      e('label', { className:'block text-sm mb-1' }, 'Quantité ('+(m.unit||'unités')+')'),
+                      e('input', { type:'number', className:'input', value: qty, min:0, step:m.step_unit||1, onChange:(ev)=> setQty(m.id, ev.target.value) })
+                    ) : e('div', null),
+                    e('div', { className:'text-right' },
+                      e('div', { className:'text-xs muted' }, isRec? 'Montant (recette)' : 'Montant estimé'),
+                      e('div', { className:'text-lg font-semibold '+(isRec? 'text-green-700':'' ) }, (isRec? '+ ':'') + euro(Math.abs(amt))),
+                      !isRec ? e('div', { className:'text-[11px] muted' }, 'CAPEX ', Math.round((+m.capex_share||0)*100),'% / OPEX ', Math.round((1-(+m.capex_share||0))*100),'%') : null
+                    )
+                  ),
+                  m.notes ? e('details', { className:'mt-2' },
+                    e('summary', { className:'text-sm cursor-pointer' }, 'Détails / explications'),
+                    e('div', { className:'text-xs muted mt-2' }, m.notes)
+                  ) : null
+                );
+              })
+            ) : e('div', { className:'text-sm text-gray-500' }, 'Aucune mesure détectée. Vérifiez que le CSV public contient bien les colonnes attendues.'),
+
+            e('div', { className:'mt-4 grid md:grid-cols-4 gap-3 text-center' },
+              e('div', { className:'bg-gray-100 rounded-xl p-3' }, e('div',{className:'text-xs muted'},'Dépenses (mesures)'), e('div',{className:'text-lg font-semibold'}, euro(totalDepenses))),
+              e('div', { className:'bg-gray-100 rounded-xl p-3' }, e('div',{className:'text-xs muted'},'Recettes (mesures)'), e('div',{className:'text-lg font-semibold text-green-700'}, '+ ', euro(totalRecettesMesures))),
+              e('div', { className:'bg-gray-100 rounded-xl p-3' }, e('div',{className:'text-xs muted'},'Net programme (mesures)'), e('div',{className:'text-lg font-semibold'}, euro(totalDepenses - totalRecettesMesures))),
+              e('div', { className:'bg-gray-100 rounded-xl p-3' }, e('div',{className:'text-xs muted'},'Reste après programme + prêt/taxe'), e('div',{className:'text-lg font-semibold ' + (reliquat<0?'text-red-600':'')}, euro(reliquat))),
+            )
           ),
 
-          e('div', { className:'text-center text-xs text-gray-500' }, '© POP — UMD minimal pour diagnostic (sans modules / Babel).')
+          e('section', { className:'card bg-white rounded-2xl p-6' },
+            e('h2', { className:'text-xl font-semibold mb-3' }, '4) Leviers supplémentaires'),
+            e('div', { className:'grid md:grid-cols-3 gap-3' },
+              e('div', { className:'bg-gray-50 rounded-xl p-3' },
+                e('div', { className:'font-medium' }, 'Hausse taxe (recette)'),
+                e('label', { className:'block text-sm mb-1' }, '€/hab/an'),
+                e('input', { type:'number', className:'input', value: taxPerHab, onChange:(ev)=> setTaxPerHab(+ev.target.value||0), min:0, step:1 }),
+                e('div', { className:'text-xs muted mt-1' }, 'Recette calculée : ', e('strong', null, euro(recettesTaxe||0)))
+              ),
+              e('div', { className:'bg-gray-50 rounded-xl p-3 md:col-span-2' },
+                e('div', { className:'font-medium' }, 'Prêt (annuité dépense)'),
+                e('div', { className:'grid md:grid-cols-3 gap-2' },
+                  e('div', null,
+                    e('label', { className:'block text-sm mb-1' }, 'Montant (€)'),
+                    e('input', { type:'number', className:'input', value: loanAmount, onChange:(ev)=> setLoanAmount(+ev.target.value||0), min:0, step:1000 })
+                  ),
+                  e('div', null,
+                    e('label', { className:'block text-sm mb-1' }, 'Taux (%)'),
+                    e('input', { type:'number', className:'input', value: loanRate, onChange:(ev)=> setLoanRate(+ev.target.value||0), min:0, step:.1 })
+                  ),
+                  e('div', null,
+                    e('label', { className:'block text-sm mb-1' }, 'Durée (ans)'),
+                    e('input', { type:'number', className:'input', value: loanYears, onChange:(ev)=> setLoanYears(+ev.target.value||0), min:1, step:1 })
+                  )
+                ),
+                e('div', { className:'text-xs muted mt-1' }, 'Annuité estimée : ', e('strong', null, euro(chargeAnnuellePret||0)))
+              )
+            )
+          ),
+
+          e('section', { className:'text-center text-xs muted' }, '© POP — UMD avec commune, sélection, quantités, recettes & prêts.')
         );
       }
 
-      const root = ReactDOM.createRoot(document.getElementById('root'));
-      root.render(React.createElement(App));
+      ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
     })();
   </script>
 </body>
