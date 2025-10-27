@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Simulateur POP — Budget simple + Import auto (Drive CSV)</title>
+  <title>Simulateur POP — Import Google CSV (robuste)</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -18,15 +18,34 @@
     .muted { color: #6b7280; }
     .input { width: 100%; border: 1px solid #e5e7eb; border-radius: 0.75rem; padding: 0.5rem 0.75rem; }
     .btn { border-radius: 1rem; padding: 0.5rem 0.9rem; }
-    details summary { cursor: pointer; }
+    #errorOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); color: #fff; padding: 20px; display:none; z-index: 9999; overflow:auto; }
+    #errorOverlay pre { white-space: pre-wrap; }
   </style>
 </head>
 <body class="bg-gray-50">
+  <div id="errorOverlay"><div class="max-w-3xl mx-auto"><h2 class="text-xl font-semibold mb-2">Erreur JavaScript capturée</h2><pre id="errorText"></pre></div></div>
+  <div class="text-center text-xs text-gray-500 pt-2" id="health">Chargement… (health check)</div>
   <main id="root" class="p-6 md:p-10 max-w-6xl mx-auto"></main>
+
+  <!-- UMD dependencies -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+  <script>
+    // Error overlay
+    (function(){
+      function showError(msg, src, line, col, err){
+        const overlay = document.getElementById('errorOverlay');
+        const pre = document.getElementById('errorText');
+        overlay.style.display = 'block';
+        pre.textContent = (msg||'') + "\n" + (src? (src+":"+line+":"+col):"") + "\n\n" + (err && err.stack ? err.stack : String(err||''));
+      }
+      window.onerror = function(msg, src, line, col, err){ showError(msg, src, line, col, err); };
+      window.onunhandledrejection = function(e){ showError('Unhandled promise rejection', '', '', '', e.reason||e); };
+    })();
+  </script>
 
   <script type="module">
     import { html, render, useState, useMemo, useEffect, useRef } from 'https://unpkg.com/htm/preact/standalone.module.js';
-    const Papa = await import('https://cdn.jsdelivr.net/npm/papaparse@5.4.1/+esm');
 
     const CSV_DEFAULT = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTJiCwyahttqXaLyaIjNFZo8y4o96DDuRpS4rfHsw6x74gjm7iZtn2xRGn2P7tuHtjjj3633n7dTgzv/pub?output=csv";
 
@@ -95,13 +114,13 @@
         case 'fixed_estimate': val = base; break;
         default: val = +m.montant || 0;
       }
-      return val; // negative if base negative => revenue
+      return val;
     }
 
     function App(){
       const [commune, setCommune] = useState({ nom:'', insee:'', population:null });
       const [population, setPopulation] = useState(null);
-      const eurosParHabDefault = 1474; // INSEE 2023
+      const eurosParHabDefault = 1474;
       const [eurosParHab, setEurosParHab] = useState(eurosParHabDefault);
       const [floors, setFloors] = useState([
         { id:'personnel', label:'Personnel communal (masse salariale)', pct:35 },
@@ -141,7 +160,7 @@
           const res = await fetch(url, { cache:'no-store' });
           if(!res.ok) throw new Error('HTTP ' + res.status);
           const text = await res.text();
-          const parsed = Papa.parse(text, { header:true, skipEmptyLines:true });
+          const parsed = window.Papa.parse(text, { header:true, skipEmptyLines:true });
           if(parsed.errors && parsed.errors.length) console.warn('Papa errors', parsed.errors);
           const rows = parsed.data || [];
           const normalized = rows.map((r, idx) => ({ 
@@ -153,7 +172,7 @@
             base_value: +(r.base_value||0),
             capex_share: +(r.capex_share || 0),
             notes: (r.notes || '').toString(),
-            units: needUnits.has((r.scaling||'').trim()) ? (+(r.step_unit||1)) : 0,
+            units: new Set(['per_unit','per_km','per_m2','per_point_lumineux']).has((r.scaling||'').trim()) ? (+(r.step_unit||1)) : 0,
             step_unit: +(r.step_unit||1),
           }));
           setMeasures(normalized);
@@ -165,12 +184,17 @@
         }
       }
 
-      useEffect(()=>{ loadCsvFromUrl(csvUrl); }, []);
+      useEffect(()=>{
+        // health ping
+        const h = document.getElementById('health');
+        if(h) h.textContent = 'Scripts chargés — initialisation ok';
+        loadCsvFromUrl(csvUrl);
+      }, []);
 
       function onClickImport(){ fileRef.current?.click(); }
       function onFileSelected(e){
         const f = e.target.files?.[0]; if(!f) return;
-        Papa.parse(f, { header:true, skipEmptyLines:true, complete:(res)=>{
+        window.Papa.parse(f, { header:true, skipEmptyLines:true, complete:(res)=>{
           const rows = res.data || [];
           const normalized = rows.map((r, idx) => ({ 
             id: (r.id || `m_${idx}`).toString().trim(),
@@ -181,7 +205,7 @@
             base_value: +(r.base_value||0),
             capex_share: +(r.capex_share || 0),
             notes: (r.notes || '').toString(),
-            units: needUnits.has((r.scaling||'').trim()) ? (+(r.step_unit||1)) : 0,
+            units: new Set(['per_unit','per_km','per_m2','per_point_lumineux']).has((r.scaling||'').trim()) ? (+(r.step_unit||1)) : 0,
             step_unit: +(r.step_unit||1),
           }));
           setMeasures(normalized);
@@ -215,6 +239,39 @@
       };
 
       const downloadPDF = () => { window.print(); };
+
+      // Render
+      render(html`<${Main}
+        commune=${commune} setCommune=${setCommune}
+        population=${population} setPopulation=${setPopulation}
+        eurosParHab=${eurosParHab} setEurosParHab=${setEurosParHab}
+        floors=${floors} setFloors=${setFloors}
+        popRef=${popRef} seats=${seats}
+        totalPctFloors=${totalPctFloors} totalIndicatif=${totalIndicatif}
+        montantFloors=${montantFloors} sommeFloors=${sommeFloors} enveloppeLibre=${enveloppeLibre}
+        computedMeasures=${computedMeasures} totalDepenses=${totalDepenses} totalRecettes=${totalRecettes}
+        totalProgramme=${totalProgramme} reliquat=${reliquat}
+        csvUrl=${csvUrl} setCsvUrl=${setCsvUrl}
+        loadCsvFromUrl=${loadCsvFromUrl}
+        fileRef=${fileRef} onClickImport=${onClickImport} onFileSelected=${onFileSelected}
+        changeMeasureUnits=${changeMeasureUnits} removeMeasure=${removeMeasure}
+        downloadJSON=${downloadJSON} downloadPDF=${downloadPDF}
+      />`, document.getElementById('root'));
+    }
+
+    function Main(props){
+      const {
+        commune, setCommune, population, setPopulation,
+        eurosParHab, setEurosParHab, floors, setFloors,
+        popRef, seats, totalPctFloors, totalIndicatif, montantFloors, sommeFloors, enveloppeLibre,
+        computedMeasures, totalDepenses, totalRecettes, totalProgramme, reliquat,
+        csvUrl, setCsvUrl, loadCsvFromUrl,
+        fileRef, onClickImport, onFileSelected,
+        changeMeasureUnits, removeMeasure,
+        downloadJSON, downloadPDF
+      } = props;
+
+      const updateFloor = (id, pct) => setFloors(prev => prev.map(f=> f.id===id ? ({...f, pct:+pct}) : f));
 
       return html`
         <div class="space-y-6">
@@ -282,7 +339,7 @@
                 </div>
                 <div class="bg-gray-100 rounded-xl p-3">
                   <div class="text-xs muted">Total dépenses (programme)</div>
-                  <div class="text-lg font-semibold">${euro(totalDepenses)}</div>
+                  <div class="text-lg font-semibold">${euro(totalProgramme + totalRecettes)}</div>
                 </div>
                 <div class="bg-gray-100 rounded-xl p-3">
                   <div class="text-xs muted">Total recettes (programme)</div>
@@ -324,7 +381,7 @@
                           <div class="text-xs muted">Méthode</div>
                           <div class="text-sm">${m.scaling}${m.unit? ` • ${m.unit}`:''}</div>
                         </div>
-                        ${needUnits.has(m.scaling) && html`
+                        ${new Set(['per_unit','per_km','per_m2','per_point_lumineux']).has(m.scaling) && html`
                           <div>
                             <label class="block text-sm mb-1">Quantité (${m.unit||'unités'})</label>
                             <input type="number" class="input" value=${m.units||0} min="0" step=${m.step_unit||1} onInput=${(e)=>changeMeasureUnits(m.id, e.target.value)} />
@@ -361,13 +418,11 @@
               `}
             </section>
 
-            <section class="text-center text-xs muted">© POP — Prototype statique. Import CSV Google Sheets public (auto), recettes supportées (montants négatifs ou catégorie “Recettes”).</section>
+            <section class="text-center text-xs muted">© POP — Prototype statique. Import Google Sheets CSV public (auto), recettes supportées (montants négatifs ou catégorie “Recettes”).</section>
           </div>
         </div>
       `;
     }
-
-    render(html`<${App}/>`, document.getElementById('root'));
   </script>
 </body>
 </html>

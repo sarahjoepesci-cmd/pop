@@ -1,1 +1,1 @@
-Simulateur simple (no-build) avec import automatique du CSV public Google Sheets fourni. Gère dépenses & recettes (base_value négatif ou catégorie 'Recettes').
+Version robuste: pas de top-level await, PapaParse UMD, overlay d'erreur JS, health-check.
