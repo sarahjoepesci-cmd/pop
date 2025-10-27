@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Simulateur communal POP — Commune + Sièges + Auto budgets</title>
+  <title>Simulateur communal POP — Correctif rendu</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -29,7 +29,6 @@
   <script type="text/babel">
     const { useMemo, useState, useEffect, useRef } = React;
 
-    // ---------- Helpers API ----------
     async function fetchOfglBudgets(insee) {
       try {
         const qs = new URLSearchParams({
@@ -51,10 +50,7 @@
           invDep:  Number(rec.i_dep) || 0,
           year: rec.exer
         };
-      } catch (e) {
-        console.warn("Erreur OFGL", e);
-        return null;
-      }
+      } catch (e) { console.warn("Erreur OFGL", e); return null; }
     }
 
     async function fetchDGF(insee) {
@@ -75,13 +71,9 @@
         const year  = rec.annee ?? rec.exer ?? null;
         if (!value) return null;
         return { value, year };
-      } catch (e) {
-        console.warn("Erreur DGF", e);
-        return null;
-      }
+      } catch (e) { console.warn("Erreur DGF", e); return null; }
     }
 
-    // ---------- Règles sièges (barème complet L2121-2) ----------
     const seatRules = [
       { min: 0, max: 99, seats: 7 },
       { min: 100, max: 499, seats: 11 },
@@ -114,7 +106,6 @@
       return pop >= 1000 ? "Scrutin de liste paritaire (≥ 1000 hab)" : "Scrutin majoritaire plurinominal (panachage)";
     }
 
-    // ---------- Mesures ----------
     const MEASURES = [
       { id: "proprete_tri", label: "Propreté — Bacs + tri collectif", unitLabel: "bacs", defaultUnits: 60, defaultUnitCost: 320, capexShare: 0.5, type: "expense" },
       { id: "voirie_velo", label: "Mobilité — Marquage pistes cyclables", unitLabel: "km", defaultUnits: 5, defaultUnitCost: 40000, capexShare: 0.8, type: "expense" },
@@ -126,7 +117,6 @@
       { id: "taxe_residences_secondaires", label: "Recette — Surtaxe résidences secondaires", unitLabel: "k€ estimés/an", defaultUnits: 50, defaultUnitCost: 1000, capexShare: 0.0, type: "revenue" },
     ];
 
-    // ---------- Utils ----------
     function euro(n) { return (n ?? 0).toLocaleString("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 0 }); }
     function useDebouncedValue(value, delay=300) { const [v, setV] = React.useState(value); React.useEffect(()=>{const t=setTimeout(()=>setV(value),delay);return()=>clearTimeout(t);},[value,delay]); return v; }
 
@@ -146,7 +136,6 @@
       </div>);
     }
 
-    // ---------- App ----------
     function App() {
       const [commune, setCommune] = useState({ nom: "", insee: "", population: null });
       const [population, setPopulation] = useState(null);
@@ -165,16 +154,15 @@
 
       const totals = useMemo(()=>{ let capex=0, opex=0, newRecettes=0;
         for(const item of basket){
-          const meta = MEASURES.find(m=>m.id===item.id); if(!meta) continue;
+          const m = MEASURES.find(x=>x.id===item.id); if(!m) continue;
           let cost=(item.units||0)*(item.unitCost||0);
-          if(meta.id==="carte_culture"){ cost = (item.units||0) * (popRef||0); }
-          if(meta.type==="revenue"){ newRecettes += cost; } else { capex += cost*meta.capexShare; opex += cost*(1-meta.capexShare); }
+          if(m.id==="carte_culture"){ cost = (item.units||0) * (popRef||0); }
+          if(m.type==="revenue"){ newRecettes += cost; } else { capex += cost*m.capexShare; opex += cost*(1-m.capexShare); }
         } return { capex, opex, total: capex+opex, recettes: newRecettes }; }, [basket, popRef]);
 
       const epargneBruteAvant = baseBudgetFuncRec - baseBudgetFuncDep;
       const epargneBruteApres = (baseBudgetFuncRec + totals.recettes) - (baseBudgetFuncDep + totals.opex);
 
-      // ---- Budget disponible (nouveau) ----
       const dispoAvant = Math.max(0, (baseBudgetFuncRec - baseBudgetFuncDep))
                        + Math.max(0, (baseBudgetInvRec + dgf) - baseBudgetInvDep);
       const dispoApres = Math.max(0, (baseBudgetFuncRec + totals.recettes) - (baseBudgetFuncDep + totals.opex))
@@ -194,17 +182,13 @@
           setBaseBudgetInvRec(b.invRec);
           setBaseBudgetInvDep(b.invDep);
           setAutoYear(b.year);
-        } else {
-          setAutoYear(null);
-        }
+        } else { setAutoYear(null); }
 
         const d = await fetchDGF(c.code);
         if (d && typeof d.value === "number") {
           setDgf(d.value);
           setAutoDgfYear(d.year || null);
-        } else {
-          setAutoDgfYear(null);
-        }
+        } else { setAutoDgfYear(null); }
       }
 
       return (<div className="space-y-6">
@@ -299,7 +283,7 @@
                     <div><label className="block text-sm mb-1">Coût unitaire (€)</label><input type="number" className="w-full border rounded-xl px-3 py-2" value={sel.unitCost} onChange={(e)=>setBasket(prev=>prev.map(b=>b.id===m.id?{...b,unitCost:Number(e.target.value)}:b))} /></div>
                   </div>
                   {m.id==="carte_culture" && <div className="mt-2 text-xs muted">Coût = (€/hab/an) × population.</div>}
-                  {m.type==="expense" && <div className="mt-2 text-xs muted">CAPEX {Math.round(m.capexShare*100)}% / OPEX {Math.round((1-meta.capexShare)*100)}%</div>}
+                  <div className="mt-2 text-xs muted">CAPEX {Math.round(m.capexShare*100)}% / OPEX {Math.round((1-m.capexShare)*100)}%</div>
                 </div>
               );})}
             </div>

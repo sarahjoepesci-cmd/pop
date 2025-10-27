@@ -1,1 +1,1 @@
-Remplacez votre index.html. Cette version rétablit l'autocomplete de commune, le bloc Sièges (barème complet), l'auto-budget OFGL/DGF et le 'Budget disponible'.
+Correctif d'un bug JS (meta -> m) qui empêchait le rendu. Autocomplete, sièges (barème complet), auto-budgets OFGL/DGF, budget disponible inclus.
